@@ -146,7 +146,8 @@ with an `upstream` remote so our changes stay a rebasable series. Our engine
 changes live in **`patches/`**, which is the only portable record of them.
 
 ```
-patches/            our 2 engine commits — WITHOUT these, no frecency
+patches/            our 4 engine commits — WITHOUT these: no frecency, no
+                    Enter/Right accept, no macOS styling, Esc stays broken
 scripts/setup.mjs   bootstrap: clone pinned engine, apply patches, build, configure
 specs/src/          our specs (filename = command name)
 specs/src/lib/      shared generators + spec-augment helpers
@@ -310,7 +311,7 @@ make upstream    # fetch, rebase our 2 commits, rebuild, re-export patches
 Then bump `PINNED_COMMIT` in `scripts/setup.mjs` to the new base (the command
 prints it) and commit the refreshed `patches/`.
 
-Our two commits, kept separate so rebases stay cheap:
+Our four commits, kept separate so rebases stay cheap:
 
 - **`fix(complete): load config so local specs resolve`** — an upstream bug:
   `complete` never called `loadConfig()`, so `specs.path` stayed `[]` and the
