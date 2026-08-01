@@ -61,7 +61,7 @@ Then start a session:
 Type `git ch`, `yarn `, or `xcodebuild -scheme ` and the dropdown appears.
 
 Keys: <kbd>Tab</kbd> / <kbd>Enter</kbd> / <kbd>→</kbd> accept · <kbd>↑</kbd>/<kbd>↓</kbd> navigate ·
-<kbd>Esc</kbd> dismiss.
+<kbd>Esc</kbd> dismiss · <kbd>Tab</kbd> re-open after dismissing.
 
 Upstream only accepts on <kbd>Tab</kbd>. We add two more, both config-gated:
 
@@ -73,6 +73,13 @@ Upstream only accepts on <kbd>Tab</kbd>. We add two more, both config-gated:
 
 Set `acceptOnEnter = false` / `acceptOnRightArrow = false` to get the
 Tab-only behaviour back.
+
+<kbd>Esc</kbd> closes the menu **for the rest of the line** — it no longer pops
+back on the next character (upstream reset its hidden flag on the very next
+keystroke, which made Esc look broken). <kbd>Tab</kbd> re-opens it, as does
+submitting or clearing the line. <kbd>↑</kbd>/<kbd>↓</kbd> deliberately do *not*
+re-open: upstream already uses those to keep the menu hidden while you browse
+shell history.
 
 ### Start it automatically in every shell
 
@@ -193,12 +200,17 @@ acceptOnEnter = true      # our addition; Enter accepts the highlighted suggesti
 acceptOnRightArrow = true # our addition; Right accepts at end of line only
 
 [theme]                        # all ours; upstream hardcoded one purple
-border = "#7D56F4"             # box borders
-activeBackground = "#7D56F4"   # selected row background
+border = "#3A3A3C"             # hairline border
+activeBackground = "#0A84FF"   # systemBlue selection
 activeForeground = "#FFFFFF"   # selected row text
-description = "#9CA3AF"        # description panel text (dimmed)
+description = "#98989D"        # secondary text (dimmed)
 pointer = "▸"                  # selected-row marker; must be 1 cell wide
+corners = "rounded"            # "rounded" (macOS menu) or "square"
 ```
+
+Defaults model a native macOS menu: rounded corners, hairline border, systemBlue
+selection, dimmed secondary text, and no body fill so your terminal background
+shows through.
 
 The `pointer` sits in a fixed-width gutter rendered on **every** row, so the text
 never shifts sideways as the selection moves. Keep it one cell wide or the box
@@ -305,6 +317,7 @@ Our two commits, kept separate so rebases stay cheap:
   debug command silently disagreed with a real session. Also guards a
   `JSON.stringify(undefined)` crash. **Worth sending upstream as a PR.**
 - **`feat(frecency): rank suggestions by directory-aware usage history`**
+- **`fix(ui): make Esc actually dismiss, and style the menu like a macOS menu`**
 - **`feat(ui): accept on Enter/Right, and actually style the dropdown`** — also
   fixes a latent upstream bug: `renderBox` did `chalk.hex(color).apply(text)`,
   which calls `Function.prototype.apply` with `text` as *thisArg* and **no
