@@ -1,6 +1,6 @@
 VENDOR := vendor/inshellisense
 
-.PHONY: setup specs test complete upstream patches clean
+.PHONY: setup specs test verify complete upstream patches clean
 
 ## One-shot bootstrap on a new machine (idempotent — safe to re-run)
 setup:
@@ -17,6 +17,10 @@ specs:
 ## regression. `npm run test:e2e` needs a `shell-use` daemon that isn't on npm.
 test:
 	npm run test:vendor
+
+## Confirm the install resolved our specs, not just the bundled corpus
+verify:
+	node scripts/verify.mjs
 
 ## Headless completion probe: make complete Q="adb -s "
 complete:

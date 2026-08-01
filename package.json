@@ -9,7 +9,8 @@
     "build:specs": "tsc -p specs/tsconfig.json && node specs/build-index.mjs",
     "refresh": "node specs/refresh/drift.mjs",
     "patches": "node scripts/export-patches.mjs",
-    "test:vendor": "cd vendor/inshellisense && npm test"
+    "test:vendor": "cd vendor/inshellisense && npm test",
+    "verify": "node scripts/verify.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
