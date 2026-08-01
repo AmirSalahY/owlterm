@@ -11,7 +11,8 @@
     "patches": "node scripts/export-patches.mjs",
     "test:vendor": "cd vendor/inshellisense && npm test",
     "verify": "node scripts/verify.mjs",
-    "shell-init": "node scripts/shell-init.mjs"
+    "shell-init": "node scripts/shell-init.mjs",
+    "diagnose": "node scripts/diagnose.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
