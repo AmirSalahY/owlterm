@@ -1,40 +1,37 @@
 VENDOR := vendor/inshellisense
-SPECS_BUILD := $(CURDIR)/specs/build
 
-.PHONY: setup build unpack specs test complete clean upstream
+.PHONY: setup specs test complete upstream patches clean
 
-## Full first-time setup
-setup: build unpack specs
+## One-shot bootstrap on a new machine (idempotent — safe to re-run)
+setup:
+	npm install
+	npm run setup
 
-## Compile the vendored engine (tsc only; node-pty ships a darwin-arm64 prebuild,
-## so no native compile is needed)
-build:
-	cd $(VENDOR) && npm ci && npm run build
-
-## Populate ~/.inshellisense/spec from the bundled Fig corpus.
-## IMPORTANT: in a non-SEA (dev) build, unpackSpecs() reads
-## `process.cwd()/node_modules/@withfig/autocomplete/build`, so this MUST run with
-## cwd = $(VENDOR). Upstream normally does this inside `is init`, but there it is
-## called un-awaited (a race), so we invoke it directly and await it.
-unpack:
-	cd $(VENDOR) && node --input-type=module -e \
-	  'import { unpackResources } from "./build/utils/node.js"; await unpackResources(); console.log("specs unpacked");'
-
-## Compile our own + override specs into specs/build
+## Recompile our specs after editing specs/src
 specs:
 	npm run build:specs
 
-## Vendor test suite (jest, needs --experimental-vm-modules)
+## Vendor test suite
+## NOTE: 3 tests fail on clean upstream too (one shells out to a real `brew
+## search`, two depend on terminal cursor sequences). Compare before believing a
+## regression. `npm run test:e2e` needs a `shell-use` daemon that isn't on npm.
 test:
-	cd $(VENDOR) && npm test
+	npm run test:vendor
 
-## Headless completion check: make complete Q="adb -s "
+## Headless completion probe: make complete Q="adb -s "
 complete:
 	@cd $(VENDOR) && node build/index.js complete "$(Q)"
 
-## Replay our patches onto the latest upstream
+## Replay our patches onto the latest upstream, then re-export them
 upstream:
 	cd $(VENDOR) && git fetch upstream && git rebase upstream/main
+	cd $(VENDOR) && npm ci && npm run build
+	npm run patches
+	@echo "Remember to bump PINNED_COMMIT in scripts/setup.mjs"
+
+## Re-export vendor commits to patches/ (do this after ANY vendor edit)
+patches:
+	npm run patches
 
 clean:
-	rm -rf specs/build
+	rm -rf specs/build specs/.tsc

@@ -11,6 +11,7 @@
 //   { ttl (ms), strategy: "max-age", cacheKey?, cacheByDirectory? }
 // Omitting cacheKey makes the cache key include cwd + context tokens.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 /** Walk up from `cwd` looking for a file — RN/monorepo layouts nest deeply. */
@@ -55,9 +56,38 @@ export const packageScripts: Fig.Generator = {
   },
 };
 
+/**
+ * Resolve `adb` without assuming it is on PATH.
+ *
+ * The generator runs in the engine's environment, which is not necessarily the
+ * interactive shell's — and plenty of setups never put platform-tools on PATH at
+ * all. Falling back to the standard SDK locations (honouring ANDROID_HOME /
+ * ANDROID_SDK_ROOT) is the difference between "no devices" and "works".
+ */
+const adbCandidates = (): string[] => {
+  const home = os.homedir();
+  const sdks = [process.env.ANDROID_HOME, process.env.ANDROID_SDK_ROOT].filter(Boolean) as string[];
+  return [
+    "adb",
+    ...sdks.map((s) => path.join(s, "platform-tools", "adb")),
+    path.join(home, "Library", "Android", "sdk", "platform-tools", "adb"), // macOS default
+    path.join(home, "Android", "Sdk", "platform-tools", "adb"), // Linux default
+    "/usr/local/bin/adb",
+    "/opt/homebrew/bin/adb",
+  ];
+};
+
 /** Connected Android devices/emulators, parsed from `adb devices -l`. */
 export const adbDevices: Fig.Generator = {
-  script: ["adb", "devices", "-l"],
+  // `command -v` probes PATH first, then each known SDK location, and runs the
+  // first one that exists. Exits quietly when Android tooling isn't installed.
+  script: [
+    "sh",
+    "-c",
+    adbCandidates()
+      .map((c) => (c === "adb" ? `command -v adb >/dev/null 2>&1 && exec adb devices -l` : `[ -x "${c}" ] && exec "${c}" devices -l`))
+      .join("; ") + "; exit 0",
+  ],
   // Devices are global, not per-directory — a fixed cacheKey stops us
   // re-shelling once per directory for the same answer.
   cache: { ttl: 5_000, strategy: "max-age", cacheKey: "termauto:adb-devices" },
