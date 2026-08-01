@@ -60,7 +60,19 @@ Then start a session:
 
 Type `git ch`, `yarn `, or `xcodebuild -scheme ` and the dropdown appears.
 
-Keys: <kbd>Tab</kbd> accept · <kbd>↑</kbd>/<kbd>↓</kbd> navigate · <kbd>Esc</kbd> dismiss.
+Keys: <kbd>Tab</kbd> / <kbd>Enter</kbd> / <kbd>→</kbd> accept · <kbd>↑</kbd>/<kbd>↓</kbd> navigate ·
+<kbd>Esc</kbd> dismiss.
+
+Upstream only accepts on <kbd>Tab</kbd>. We add two more, both config-gated:
+
+- <kbd>Enter</kbd> accepts the highlighted suggestion, then a second <kbd>Enter</kbd>
+  runs the command. If the word is **already fully typed** there's nothing to
+  accept, so <kbd>Enter</kbd> submits directly rather than demanding two presses.
+- <kbd>→</kbd> accepts **only with the cursor at end of line** — mid-line it still
+  moves the cursor, otherwise the line would be uneditable.
+
+Set `acceptOnEnter = false` / `acceptOnRightArrow = false` to get the
+Tab-only behaviour back.
 
 ### Start it automatically in every shell
 
@@ -177,7 +189,20 @@ path = ["/abs/path/to/termauto/specs/build"]   # machine-specific
 maxSuggestions = 10       # default 5 is cramped for e.g. xcodebuild's 78 options
 useFrecency = true        # our addition; false disables usage-based ranking
 useNerdFont = false       # true resolves fig:// icons to Nerd Font glyphs
+acceptOnEnter = true      # our addition; Enter accepts the highlighted suggestion
+acceptOnRightArrow = true # our addition; Right accepts at end of line only
+
+[theme]                        # all ours; upstream hardcoded one purple
+border = "#7D56F4"             # box borders
+activeBackground = "#7D56F4"   # selected row background
+activeForeground = "#FFFFFF"   # selected row text
+description = "#9CA3AF"        # description panel text (dimmed)
+pointer = "▸"                  # selected-row marker; must be 1 cell wide
 ```
+
+The `pointer` sits in a fixed-width gutter rendered on **every** row, so the text
+never shifts sideways as the selection moves. Keep it one cell wide or the box
+alignment breaks.
 
 Frecency history lives at `~/.inshellisense/frecency.jsonl`. Delete it to reset
 ranking.
@@ -280,6 +305,18 @@ Our two commits, kept separate so rebases stay cheap:
   debug command silently disagreed with a real session. Also guards a
   `JSON.stringify(undefined)` crash. **Worth sending upstream as a PR.**
 - **`feat(frecency): rank suggestions by directory-aware usage history`**
+- **`feat(ui): accept on Enter/Right, and actually style the dropdown`** — also
+  fixes a latent upstream bug: `renderBox` did `chalk.hex(color).apply(text)`,
+  which calls `Function.prototype.apply` with `text` as *thisArg* and **no
+  arguments**, so chalk returned `""` and every border character disappeared.
+  Dormant only because no caller ever passed a `borderColor`. **Also PR-worthy.**
+
+> **Heads-up on testing the dropdown's looks:** `src/tests/ui/` — the only suite
+> that snapshots the rendered dropdown — is **excluded** from `npm test`
+> (`testPathIgnorePatterns`), and it needs the `shell-use` daemon anyway. So the
+> 93 passing snapshots say nothing about the visuals. Verify styling by driving
+> the render methods directly, as `_renderSuggestions`/`_renderDescription` are
+> TS-`private` (not `#private`) and reachable at runtime.
 
 ## Tests
 
