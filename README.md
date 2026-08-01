@@ -46,7 +46,9 @@ npm run setup
 3. installs deps and builds it,
 4. unpacks the ~727-entry spec corpus into `~/.inshellisense/spec`,
 5. compiles our specs,
-6. writes `~/.config/inshellisense/rc.toml` **with the absolute paths for that
+6. links `bin/termauto` onto your PATH as **`is`** — the generated shell hook
+   invokes it by that bare name, and without it auto-start silently never fires,
+7. writes `~/.config/inshellisense/rc.toml` **with the absolute paths for that
    machine** — or, if you already have a config, prints the block to merge
    instead of overwriting it.
 
@@ -63,14 +65,36 @@ Keys: <kbd>Tab</kbd> accept · <kbd>↑</kbd>/<kbd>↓</kbd> navigate · <kbd>Es
 ### Start it automatically in every shell
 
 ```sh
-./bin/termauto init zsh >> ~/.zshrc      # or: init bash / fish / pwsh / nu
+npm run shell-init          # zsh (default) — or: npm run shell-init bash
+npm run shell-init -- --dry-run   # preview without writing
 ```
 
-> It **must be the last line** of the rc file. Anything that initialises after it
-> — notably a plugin manager — can break it.
+Use this rather than the upstream `is init zsh >> ~/.zshrc`, because it also:
 
-To undo, delete that line from `~/.zshrc`. To remove everything else:
-`rm -rf ~/.inshellisense ~/.config/inshellisense`.
+- **backs up** your rc file first,
+- **syntax-checks** the result and **restores the backup if it broke** (a broken
+  `.zshrc` breaks every new shell),
+- refuses to add itself twice,
+- fails loudly if `is` isn't on PATH instead of writing a hook that silently
+  never starts,
+- and wraps the hook in a **stronger guard** than the generated script's.
+
+> **Why the stronger guard.** zsh does *not* put `c` in `$-` for `zsh -i -c`, so
+> upstream's `$- != *c*` test doesn't catch that case — any tooling that runs
+> `zsh -i -c …` would hang forever waiting on the PTY. The added
+> `-z "$ZSH_EXECUTION_STRING"` check identifies a genuinely interactive shell.
+
+> It **must be the last thing** in the rc file. Anything initialising after it —
+> notably a plugin manager — can break it.
+
+For fish / pwsh / nu: `./bin/termauto init <shell>`, placed last in that rc file.
+
+**To undo:** delete the `termauto (inshellisense)` block from `~/.zshrc` (a
+timestamped `~/.zshrc.pre-termauto-*` backup is kept). Full removal:
+
+```sh
+rm -rf ~/.inshellisense ~/.config/inshellisense ~/.local/bin/is
+```
 
 ### Verify the install
 

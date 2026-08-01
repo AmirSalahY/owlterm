@@ -1,11 +1,15 @@
 VENDOR := vendor/inshellisense
 
-.PHONY: setup specs test verify complete upstream patches clean
+.PHONY: setup shell-init specs test verify complete upstream patches clean
 
 ## One-shot bootstrap on a new machine (idempotent — safe to re-run)
 setup:
 	npm install
 	npm run setup
+
+## Append the auto-start hook to your shell rc (backs up + syntax-checks + rolls back)
+shell-init:
+	npm run shell-init
 
 ## Recompile our specs after editing specs/src
 specs:

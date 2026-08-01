@@ -30,7 +30,8 @@ const PINNED_COMMIT = "6bd0ae7";
 
 const sh = (cmd, args, opts = {}) => run(cmd, args, { stdio: "inherit", encoding: "utf8", ...opts });
 
-const step = (n, msg) => console.log(`\n\x1b[1m[${n}/6] ${msg}\x1b[0m`);
+const TOTAL_STEPS = 7;
+const step = (n, msg) => console.log(`\n\x1b[1m[${n}/${TOTAL_STEPS}] ${msg}\x1b[0m`);
 const ok = (msg) => console.log(`  \x1b[32m✓\x1b[0m ${msg}`);
 const warn = (msg) => console.log(`  \x1b[33m!\x1b[0m ${msg}`);
 const die = (msg) => {
@@ -119,8 +120,48 @@ step(4, "Unpacking the bundled spec corpus");
 step(5, "Compiling termauto specs");
 sh("npm", ["run", "build:specs"], { cwd: ROOT });
 
-// ── 6. Config ─────────────────────────────────────────────────────────────────
-step(6, "Configuring specs path");
+// ── 6. `is` on PATH ───────────────────────────────────────────────────────────
+step(6, "Linking the `is` launcher onto PATH");
+{
+  // The generated shell-init script invokes the engine by the BARE NAME `is`
+  // (`is -s zsh ; exit`). Without that name resolvable, auto-start fails in every
+  // new shell — the dropdown just never appears, with no obvious cause. So the
+  // launcher has to be reachable as `is`, not only as ./bin/termauto.
+  const launcher = path.join(ROOT, "bin", "termauto");
+  fs.chmodSync(launcher, 0o755);
+
+  if (process.platform === "win32") {
+    warn("skipping symlink on Windows — ensure bin/termauto is reachable as `is` on PATH yourself");
+  } else {
+    const pathDirs = (process.env.PATH ?? "").split(path.delimiter);
+    const preferred = [path.join(os.homedir(), ".local", "bin"), path.join(os.homedir(), "bin"), "/usr/local/bin"];
+    // Only pick a directory already on PATH, otherwise the link is invisible.
+    const target = preferred.find((d) => pathDirs.includes(d));
+
+    if (!target) {
+      warn(`none of ${preferred.join(", ")} is on your PATH.`);
+      console.log(`\n      Add one to PATH and re-run, or link it manually:`);
+      console.log(`        ln -sf "${launcher}" <a-dir-on-your-PATH>/is\n`);
+    } else {
+      const link = path.join(target, "is");
+      const existing = fs.existsSync(link) || fs.lstatSync(link, { throwIfNoEntry: false }) != null;
+      const ours = existing && fs.realpathSync(link) === fs.realpathSync(launcher);
+      if (existing && !ours) {
+        // Never silently replace someone else's binary called `is`.
+        warn(`${link} already exists and is not ours — leaving it alone.`);
+        console.log(`        Point it at ${launcher} yourself if auto-start doesn't work.`);
+      } else {
+        fs.mkdirSync(target, { recursive: true });
+        fs.rmSync(link, { force: true });
+        fs.symlinkSync(launcher, link);
+        ok(`${link} -> bin/termauto`);
+      }
+    }
+  }
+}
+
+// ── 7. Config ─────────────────────────────────────────────────────────────────
+step(7, "Configuring specs path");
 {
   // Upstream reads ~/.inshellisenserc first, then ~/.config/inshellisense/rc.toml.
   const xdg = path.join(os.homedir(), ".config", "inshellisense", "rc.toml");
@@ -160,5 +201,6 @@ useNerdFont = false
 console.log(`\n\x1b[1mDone.\x1b[0m Start a session:\n`);
 console.log(`  ${path.join(ROOT, "bin", "termauto")}\n`);
 console.log(`Then type \`git ch\` or \`yarn \` and the dropdown should appear.`);
-console.log(`To start it in every new shell (must be the LAST line of your rc file):\n`);
-console.log(`  ${path.join(ROOT, "bin", "termauto")} init zsh >> ~/.zshrc\n`);
+console.log(`To start it automatically, append this to ~/.zshrc — it MUST be the last thing`);
+console.log(`in the file, and run \`npm run shell-init\` to add it safely:\n`);
+console.log(`  npm run shell-init\n`);

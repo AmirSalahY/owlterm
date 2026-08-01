@@ -11,12 +11,34 @@
 # silently break every cwd-sensitive completion (package.json scripts, schemes).
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve symlinks before deriving ROOT. This script is normally reached through a
+# symlink (e.g. ~/.local/bin/is, which the generated shell init invokes by bare
+# name), and without resolving it ROOT would point at the symlink's directory
+# instead of the checkout. Done as a loop rather than `readlink -f` for portability.
+SELF="${BASH_SOURCE[0]}"
+while [[ -L "$SELF" ]]; do
+  TARGET="$(readlink "$SELF")"
+  # A relative link target is relative to the link's own directory.
+  [[ "$TARGET" == /* ]] && SELF="$TARGET" || SELF="$(dirname "$SELF")/$TARGET"
+done
+
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 ENTRY="$ROOT/vendor/inshellisense/build/index.js"
 
 if [[ ! -f "$ENTRY" ]]; then
-  echo "termauto: engine not built. Run: make setup" >&2
+  echo "termauto: engine not built. Run: npm run setup" >&2
   exit 1
 fi
+
+# `init` and `reinit` call unpackResources(), which in a non-SEA build reads
+# `process.cwd()/shell` and `process.cwd()/node_modules/@withfig/autocomplete/build`.
+# They only work with cwd = the engine checkout. Every other subcommand — above all
+# a real session and `complete` — must keep the user's cwd, since that's what
+# generators resolve against (package.json scripts, Xcode schemes).
+case "${1:-}" in
+  init | reinit)
+    cd "$(dirname "$ENTRY")/.." || exit 1
+    ;;
+esac
 
 exec node "$ENTRY" "$@"

@@ -10,7 +10,8 @@
     "refresh": "node specs/refresh/drift.mjs",
     "patches": "node scripts/export-patches.mjs",
     "test:vendor": "cd vendor/inshellisense && npm test",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "shell-init": "node scripts/shell-init.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
