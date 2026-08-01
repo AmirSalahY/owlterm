@@ -1,0 +1,16 @@
+# vendor/inshellisense keeps its OWN git repo (with an `upstream` remote) so our
+# frecency patch stays a single rebasable commit. Don't nest it in this repo.
+vendor/
+
+# compiled spec output
+specs/build/
+
+# generated drift drafts — promote into specs/src/ after review, don't commit raw
+specs/refresh/drafts/
+
+# local frecency history (machine-specific runtime data)
+frecency/*.jsonl
+
+node_modules/
+*.log
+.DS_Store

@@ -1,0 +1,18 @@
+{
+  "include": ["src/**/*"],
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "declaration": false,
+    "sourceMap": false,
+    // loadSpecsSet() resolves every spec as `<specs.path>/<name>.js`, so spec files
+    // live at the TOP LEVEL of src/ and the filename is the command name. Shared
+    // helpers go in src/lib/ (excluded from the index by build-index.mjs).
+    "outDir": "./build",
+    "rootDir": "./src",
+    "types": ["@withfig/autocomplete-types", "node"]
+  }
+}

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# termauto — launcher for the vendored inshellisense engine.
+#
+# Deliberately thin: we do NOT rebrand binary/config names inside vendor/, because
+# that would touch utils/constants.ts, utils/shell.ts and utils/config.ts and
+# manufacture upstream merge conflicts for cosmetic gain. Config still lives at
+# the upstream location: ~/.config/inshellisense/rc.toml
+#
+# Note: cwd is passed through untouched — the completion engine resolves
+# generators relative to the user's current directory, so changing it here would
+# silently break every cwd-sensitive completion (package.json scripts, schemes).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENTRY="$ROOT/vendor/inshellisense/build/index.js"
+
+if [[ ! -f "$ENTRY" ]]; then
+  echo "termauto: engine not built. Run: make setup" >&2
+  exit 1
+fi
+
+exec node "$ENTRY" "$@"
