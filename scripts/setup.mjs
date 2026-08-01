@@ -135,26 +135,67 @@ step(6, "Linking the `is` launcher onto PATH");
   } else {
     const pathDirs = (process.env.PATH ?? "").split(path.delimiter);
     const preferred = [path.join(os.homedir(), ".local", "bin"), path.join(os.homedir(), "bin"), "/usr/local/bin"];
-    // Only pick a directory already on PATH, otherwise the link is invisible.
-    const target = preferred.find((d) => pathDirs.includes(d));
+
+    // A link is only useful in a directory that is BOTH on PATH and writable
+    // without sudo. /usr/local/bin is commonly on PATH but root-owned, and
+    // attempting it raised EACCES and aborted the whole setup.
+    const writable = (dir) => {
+      try {
+        if (fs.existsSync(dir)) {
+          fs.accessSync(dir, fs.constants.W_OK);
+          return true;
+        }
+        // Not there yet — can we create it?
+        fs.accessSync(path.dirname(dir), fs.constants.W_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    const target = preferred.find((d) => pathDirs.includes(d) && writable(d));
+
+    const manual = () => {
+      console.log(`\n      Link it yourself into a directory on your PATH, then re-run:`);
+      console.log(`        ln -sf "${launcher}" <dir-on-PATH>/is\n`);
+      console.log(`      Auto-start (npm run shell-init) needs \`is\` resolvable; a plain`);
+      console.log(`      \`${launcher}\` session works without it.\n`);
+    };
 
     if (!target) {
-      warn(`none of ${preferred.join(", ")} is on your PATH.`);
-      console.log(`\n      Add one to PATH and re-run, or link it manually:`);
-      console.log(`        ln -sf "${launcher}" <a-dir-on-your-PATH>/is\n`);
+      const onPath = preferred.filter((d) => pathDirs.includes(d));
+      warn(
+        onPath.length > 0
+          ? `${onPath.join(", ")} is on PATH but not writable without sudo.`
+          : `none of ${preferred.join(", ")} is on your PATH.`,
+      );
+      manual();
     } else {
       const link = path.join(target, "is");
-      const existing = fs.existsSync(link) || fs.lstatSync(link, { throwIfNoEntry: false }) != null;
-      const ours = existing && fs.realpathSync(link) === fs.realpathSync(launcher);
-      if (existing && !ours) {
-        // Never silently replace someone else's binary called `is`.
-        warn(`${link} already exists and is not ours — leaving it alone.`);
-        console.log(`        Point it at ${launcher} yourself if auto-start doesn't work.`);
-      } else {
-        fs.mkdirSync(target, { recursive: true });
-        fs.rmSync(link, { force: true });
-        fs.symlinkSync(launcher, link);
-        ok(`${link} -> bin/termauto`);
+      try {
+        const present = fs.lstatSync(link, { throwIfNoEntry: false }) != null;
+        let ours = false;
+        if (present) {
+          try {
+            ours = fs.realpathSync(link) === fs.realpathSync(launcher);
+          } catch {
+            ours = false; // dangling link — safe to replace
+          }
+        }
+        if (present && !ours) {
+          // Never silently replace an unrelated binary called `is`.
+          warn(`${link} already exists and isn't ours — leaving it alone.`);
+          console.log(`        Point it at ${launcher} yourself if auto-start doesn't fire.`);
+        } else {
+          fs.mkdirSync(target, { recursive: true });
+          fs.rmSync(link, { force: true });
+          fs.symlinkSync(launcher, link);
+          ok(`${link} -> bin/termauto`);
+        }
+      } catch (e) {
+        // Not fatal: everything else still works, only auto-start needs this.
+        warn(`could not link ${link}: ${e.message}`);
+        manual();
       }
     }
   }
