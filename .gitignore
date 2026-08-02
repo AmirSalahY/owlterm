@@ -19,3 +19,5 @@ frecency/*.jsonl
 node_modules/
 *.log
 .DS_Store
+
+Agents.md

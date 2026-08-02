@@ -1,0 +1,42 @@
+From b0513a09020a6a125118c1068175763b6e92f3fe Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Sun, 2 Aug 2026 18:48:38 +0300
+Subject: [PATCH 15/15] feat(ui): soften the type-colour palette
+
+The systemGreen/systemPurple/systemTeal tints were saturated enough to compete
+with the selection bar for attention. Pastel variants of the same hues keep the
+kinds distinguishable while letting the highlighted row stay the brightest thing
+in the menu.
+---
+ src/utils/config.ts | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/src/utils/config.ts b/src/utils/config.ts
+index c58ff7e..f256c18 100644
+--- a/src/utils/config.ts
++++ b/src/utils/config.ts
+@@ -351,14 +351,14 @@ let globalConfig: Config = {
+     // than systemBlue itself: the selection bar is already blue, and a blue label
+     // on a blue bar is the one combination that loses information.
+     types: {
+-      folder: "#64D2FF", // systemTeal — `ls` blue, moved off the selection colour
++      folder: "#A6C8DC", // lighter blue-teal
+       file: "", // baseline; falls back to foreground
+-      subcommand: "#30D158", // systemGreen — `ls` executable green
+-      option: "#BF5AF2", // systemPurple — a modifier, not a thing
+-      arg: "#98989D", // systemGray — a placeholder for a value you supply
+-      special: "#FF9F0A", // systemOrange
+-      shortcut: "#FF9F0A",
+-      mixin: "#FF9F0A",
++      subcommand: "#97D6A9", // lighter green
++      option: "#CFB6E3", // lighter purple
++      arg: "#C1C1C6", // lighter gray
++      special: "#FFDCA8", // lighter orange
++      shortcut: "#FFDCA8",
++      mixin: "#FFDCA8",
+     },
+   },
+ };
+-- 
+2.51.0
+
