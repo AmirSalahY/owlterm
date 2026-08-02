@@ -29,6 +29,14 @@ const SPECS_BUILD = path.join(ROOT, "specs", "build");
 /** The command name we install. Also baked into the generated shell init scripts. */
 const CMD = "termauto";
 
+/**
+ * Must be the same string bin/termauto exports as ISTERM_VERSION — the engine
+ * stamps it into ~/.inshellisense/version.txt at unpack time and refuses to start
+ * a session when the two disagree. Read from the same package.json the launcher
+ * reads, so there is one source of truth rather than two that can drift.
+ */
+const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf-8")).version;
+
 const UPSTREAM = "https://github.com/microsoft/inshellisense";
 // Pinned so a rebuild months from now produces the same engine our patches were
 // written against. Bump deliberately via `npm run upstream`, never incidentally.
@@ -107,19 +115,25 @@ step(4, "Unpacking the bundled spec corpus");
   // nothing populates ~/.inshellisense/spec and every completion silently
   // returns nothing. Upstream calls this inside `is init` but un-awaited, so we
   // invoke it directly.
-  sh(
-    "node",
-    [
-      "--input-type=module",
-      "-e",
-      'import { unpackResources } from "./build/utils/node.js"; await unpackResources();',
-    ],
-    { cwd: VENDOR },
-  );
+  //
+  // ISTERM_VERSION must match what bin/termauto exports. unpackResources() stamps
+  // ~/.inshellisense/version.txt with getVersion(), and every session start
+  // compares the two; on a mismatch the engine prints "resources out of date" and
+  // exits(1) — which, since the shell hook is `termauto -s zsh ; exit`, closes
+  // the terminal. Unpacking under a different version than the launcher reports
+  // makes that happen on EVERY new shell.
+  sh("node", ["--input-type=module", "-e", 'import { unpackResources } from "./build/utils/node.js"; await unpackResources();'], {
+    cwd: VENDOR,
+    env: { ...process.env, ISTERM_LAUNCHER: CMD, ISTERM_VERSION: VERSION },
+  });
   const specDir = path.join(os.homedir(), ".inshellisense", "spec");
   const count = fs.existsSync(specDir) ? fs.readdirSync(specDir).length : 0;
   if (count === 0) die(`nothing landed in ${specDir} — completions would silently return nothing`);
   ok(`${count} entries in ${specDir}`);
+
+  const stamped = fs.readFileSync(path.join(os.homedir(), ".inshellisense", "version.txt"), "utf-8").trim();
+  if (stamped !== VERSION) die(`version.txt says ${stamped}, launcher reports ${VERSION} — every new shell would close itself`);
+  ok(`resources stamped ${VERSION}`);
 }
 
 // ── 5. Our specs ──────────────────────────────────────────────────────────────

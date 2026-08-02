@@ -1,4 +1,4 @@
-From 5cdbd96608aee3eddf8b4ee520ac437d6094c21e Mon Sep 17 00:00:00 2001
+From dd212c7b0bcccee1cc92ab05a1b257d33bb48622 Mon Sep 17 00:00:00 2001
 From: AmirSalahY <amir@noury.ch>
 Date: Sun, 2 Aug 2026 17:02:07 +0300
 Subject: [PATCH 13/13] feat: brand the command as termauto, and report a real
@@ -18,47 +18,93 @@ name:
 All three now read an env var (ISTERM_LAUNCHER, ISTERM_VERSION) and fall back
 to the upstream behaviour when unset, so a stock build is unchanged.
 ---
- src/index.ts         |  6 +++++-
- src/utils/shell.ts   | 36 ++++++++++++++++++++++++------------
- src/utils/version.ts | 10 +++++++++-
- 3 files changed, 38 insertions(+), 14 deletions(-)
+ src/index.ts           |  4 +++-
+ src/ui/ui-status.ts    |  7 ++++++-
+ src/utils/constants.ts | 10 ++++++++++
+ src/utils/shell.ts     | 32 +++++++++++++++++++-------------
+ src/utils/version.ts   | 10 +++++++++-
+ 5 files changed, 47 insertions(+), 16 deletions(-)
 
 diff --git a/src/index.ts b/src/index.ts
-index 26c6c7d..3967474 100644
+index 26c6c7d..9237b8c 100644
 --- a/src/index.ts
 +++ b/src/index.ts
-@@ -59,7 +59,11 @@ terminal reports reliably.
+@@ -59,7 +59,9 @@ terminal reports reliably.
  `;
  
  program
 -  .name("inshellisense")
 +  // The name commander prints in usage and error messages. It must match the
 +  // binary the user actually invoked, or every `--help` example is uncopyable.
-+  // ISTERM_LAUNCHER is exported by termauto's launcher shim; a stock upstream
-+  // build has it unset and keeps calling itself inshellisense.
 +  .name(process.env.ISTERM_LAUNCHER || "inshellisense")
    .description("IDE style command line auto complete")
    .version(getVersion(), "-v, --version", "output the current version")
    .action(action(program))
+diff --git a/src/ui/ui-status.ts b/src/ui/ui-status.ts
+index d173d99..f358f6c 100644
+--- a/src/ui/ui-status.ts
++++ b/src/ui/ui-status.ts
+@@ -3,11 +3,16 @@
+ 
+ import chalk from "chalk";
+ 
++import { launcherName } from "../utils/constants.js";
++
+ export const renderConfirmation = (live: boolean): string => {
+   const statusMessage = live ? chalk.green("live") : chalk.red("not found");
+   return `inshellisense session [${statusMessage}]\n`;
+ };
+ 
+ export const renderMissingResources = (): string => {
+-  return chalk.red(`inshellisense resources out of date, run "is reinit" to refresh\n`);
++  // This path exits(1), and the shell hook is `<launcher> -s zsh ; exit` — so a
++  // wrong command name here leaves the user with a terminal that closes itself
++  // and an instruction that doesn't work.
++  return chalk.red(`resources out of date, run "${launcherName()} reinit" to refresh\n`);
+ };
+diff --git a/src/utils/constants.ts b/src/utils/constants.ts
+index 2b0e9ef..7970bf1 100644
+--- a/src/utils/constants.ts
++++ b/src/utils/constants.ts
+@@ -19,6 +19,16 @@ const inshellisenseFolderName = ".inshellisense";
+  */
+ const resourcesRoot = process.env.ISTERM_RESOURCES_DIR || path.join(os.homedir(), inshellisenseFolderName);
+ 
++/**
++ * The name this build is invoked by on PATH.
++ *
++ * Baked into anything the user is told to type — commander's usage line, the
++ * "run X reinit" prompt — and into the generated shell init scripts, which
++ * re-exec the engine by bare name. An embedding launcher exports it; a stock
++ * install leaves it unset and stays `is`.
++ */
++export const launcherName = (): string => process.env.ISTERM_LAUNCHER || "is";
++
+ export const allResourcesPath = resourcesRoot;
+ export const loggingResourcesPath = path.join(resourcesRoot, "log");
+ export const nativeResourcesPath = path.join(resourcesRoot, "native");
 diff --git a/src/utils/shell.ts b/src/utils/shell.ts
-index edbb1d4..3060573 100644
+index edbb1d4..01cb4fd 100644
 --- a/src/utils/shell.ts
 +++ b/src/utils/shell.ts
-@@ -296,14 +296,26 @@ export const getShellSourceCommand = (shell: Shell): string => {
+@@ -9,7 +9,7 @@ import fs from "node:fs";
+ import os from "node:os";
+ import fsAsync from "node:fs/promises";
+ import util from "node:util";
+-import { shellResourcesPath, initResourcesPath } from "./constants.js";
++import { shellResourcesPath, initResourcesPath, launcherName } from "./constants.js";
+ import childProcess from "node:child_process";
+ import { KeyPressEvent } from "../ui/suggestionManager.js";
+ import log from "./log.js";
+@@ -296,14 +296,20 @@ export const getShellSourceCommand = (shell: Shell): string => {
    return "";
  };
  
 +/**
-+ * Name the generated init scripts use to re-exec the engine.
-+ *
-+ * Those scripts land in ~/.inshellisense/init/<shell>/ and invoke the engine by
-+ * BARE NAME, so this has to match whatever is actually linked onto PATH. A stock
-+ * install links `is`; termauto links `termauto` and exports ISTERM_LAUNCHER from
-+ * its launcher shim, so any regeneration from inside a termauto session writes
-+ * the right name. A mismatch is silent — the shell just never wraps itself.
++ * The generated init scripts land in ~/.inshellisense/init/<shell>/ and invoke
++ * the engine by BARE NAME, so the name below has to match whatever is actually
++ * linked onto PATH. A mismatch is silent — the shell just never wraps itself.
 + */
-+const launcherName = (): string => process.env.ISTERM_LAUNCHER || "is";
-+
  export const getShellConfig = (shell: Shell): string => {
 +  const is = launcherName();
    switch (shell) {
@@ -73,7 +119,7 @@ index edbb1d4..3060573 100644
    fi
  fi`;
      case Shell.Bash:
-@@ -311,10 +323,10 @@ fi`;
+@@ -311,10 +317,10 @@ fi`;
    shopt -q login_shell
    login_shell=$?
    if [ $login_shell -eq 0 ]; then
@@ -87,7 +133,7 @@ index edbb1d4..3060573 100644
  fi`;
      case Shell.Powershell:
      case Shell.Pwsh:
-@@ -322,26 +334,26 @@ fi`;
+@@ -322,26 +328,26 @@ fi`;
  $__IsNoExitFlag = ([Environment]::GetCommandLineArgs() | Where-Object { $_ -imatch '^-noe(xit)?$' }).Count -gt 0
  $__IsInteractive = -not $__IsCommandFlag -or ($__IsCommandFlag -and $__IsNoExitFlag)
  if ([string]::IsNullOrEmpty($env:ISTERM) -and [Environment]::UserInteractive -and $__IsInteractive -and [string]::IsNullOrEmpty($env:VSCODE_RESOLVING_ENVIRONMENT)) {
