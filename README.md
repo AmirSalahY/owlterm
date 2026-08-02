@@ -44,7 +44,7 @@ npm run setup
 1. verifies your Node version and platform,
 2. clones the engine at a **pinned** commit and applies `patches/*.patch`,
 3. installs deps and builds it,
-4. unpacks the ~727-entry spec corpus into `~/.inshellisense/spec`,
+4. unpacks the ~716-entry Fig spec corpus into `~/.inshellisense/spec`,
 5. compiles our specs,
 6. links `bin/termauto` onto your PATH as **`is`** — the generated shell hook
    invokes it by that bare name, and without it auto-start silently never fires,
@@ -155,9 +155,9 @@ make complete Q="xcodebuild -scheme "  # run this from inside an Xcode project
 Expected output:
 
 ```
-707 specs loaded
-ours: 3 (2 override bundled, 1 unique)
-✓ specs.path resolved — confirmed via rtk (present only in this checkout)
+720 specs loaded
+ours: 6 (3 override bundled, 3 unique)
+✓ specs.path resolved — confirmed via artisan, rtk, sail (present only in this checkout)
 ```
 
 It keys on a spec that exists *only* here, because most of ours override bundled
@@ -362,6 +362,33 @@ it is the stronger signal.
 
 Frecency history lives at `~/.inshellisense/frecency.jsonl`. Delete it to reset
 ranking.
+
+### What we add on top of Fig
+
+Fig's corpus (`@withfig/autocomplete`, 716 specs) is bundled whole, so `git`,
+`docker`, `npm`, `composer`, `php` and hundreds more already work — there is
+nothing to add for those, and writing our own would just shadow a better spec.
+
+Our six exist because Fig's corpus is missing or thin there:
+
+| Spec | Why |
+| --- | --- |
+| `artisan` | **absent from Fig entirely.** Laravel's actual day-to-day CLI |
+| `sail` | absent from Fig; Laravel's Docker wrapper |
+| `php` | augmented so `php artisan <TAB>` chains into the artisan spec |
+| `adb` | augmented with connected-device completion |
+| `xcodebuild` | augmented with real schemes and simulators |
+| `rtk` | private tool, no upstream spec |
+
+`artisan` and `sail` are **fully dynamic**: the command list comes from
+`artisan list --format=json`, so it includes whatever the project actually has —
+`queue:*` from Horizon, `nova:*`, your own `App\Console\Commands` — and the
+options come from each command's own definition. Hardcoding the framework's
+built-ins would be wrong for every real app.
+
+Nothing is spawned unless an `artisan` file exists above the cwd, and the JSON is
+memoised per project root so the two generators (command names, and that
+command's options) share one `php` invocation rather than one each.
 
 ---
 

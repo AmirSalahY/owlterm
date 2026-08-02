@@ -201,3 +201,99 @@ export const gradleTasks: Fig.Generator = {
         return m ? [{ name: m[1], description: m[2], icon: "fig://icon?type=gradle" }] : [];
       }),
 };
+
+// ── Laravel ───────────────────────────────────────────────────────────────────
+
+/** Directory containing `filename`, walking up from cwd. */
+const findUpDir = (cwd: string, filename: string, limit = 12): string | undefined => {
+  const found = findUp(cwd, filename, limit);
+  return found ? path.dirname(found) : undefined;
+};
+
+type ArtisanOption = { name?: string; shortcut?: string; description?: string };
+type ArtisanCommand = {
+  name?: string;
+  description?: string;
+  hidden?: boolean;
+  definition?: { options?: Record<string, ArtisanOption> };
+};
+
+/**
+ * `artisan list --format=json` for the project containing cwd.
+ *
+ * Memoised per project root rather than via `generator.cache`, because two
+ * generators (command names, and that command's options) need the SAME payload —
+ * the engine's cache is keyed per generator, so without this the list would be
+ * fetched twice for one keystroke.
+ *
+ * ~300ms cold on a real app, which is why nothing here runs unless an `artisan`
+ * file actually exists above cwd.
+ */
+const artisanCacheTtl = 60_000;
+const artisanCache = new Map<string, { at: number; commands: ArtisanCommand[] }>();
+
+const loadArtisanCommands = async (cwd: string, exec: Fig.ExecuteCommandFunction): Promise<ArtisanCommand[]> => {
+  const root = findUpDir(cwd, "artisan");
+  if (!root) return []; // not a Laravel project — never spawn php
+
+  const cached = artisanCache.get(root);
+  if (cached && Date.now() - cached.at < artisanCacheTtl) return cached.commands;
+
+  try {
+    const { stdout } = await exec({ command: "php", args: ["artisan", "list", "--format=json"], cwd: root });
+    const parsed = JSON.parse(stdout);
+    const commands: ArtisanCommand[] = Array.isArray(parsed?.commands) ? parsed.commands : [];
+    artisanCache.set(root, { at: Date.now(), commands });
+    return commands;
+  } catch {
+    // No php, a boot error in the app, or non-JSON output. A broken app must not
+    // break the dropdown — fall back to no suggestions.
+    return [];
+  }
+};
+
+/**
+ * The command being completed, given the raw tokens.
+ *
+ * Handles `artisan x`, `./artisan x` and `php artisan x` alike by anchoring on
+ * the artisan token rather than a fixed index.
+ */
+const artisanSubcommand = (tokens: string[]): string | undefined => {
+  const anchor = tokens.findIndex((t) => t === "artisan" || t.endsWith("/artisan"));
+  const rest = tokens.slice(anchor === -1 ? 1 : anchor + 1);
+  return rest.find((t) => t.length > 0 && !t.startsWith("-"));
+};
+
+/** Every artisan command the project actually has, including package-provided ones. */
+export const artisanCommands: Fig.Generator = {
+  custom: async (tokens, exec, context) => {
+    const commands = await loadArtisanCommands(context.currentWorkingDirectory, exec);
+    return commands
+      .filter((c) => c.name && !c.hidden)
+      .map((c) => ({
+        name: c.name!,
+        description: c.description,
+        icon: "fig://icon?type=command",
+        // Above spec defaults: in a Laravel project the artisan command you meant
+        // is the point of typing `artisan` at all.
+        priority: 75,
+      }));
+  },
+};
+
+/** Options for whichever artisan command has already been typed. */
+export const artisanCommandOptions: Fig.Generator = {
+  custom: async (tokens, exec, context) => {
+    const name = artisanSubcommand(tokens);
+    if (!name) return [];
+    const commands = await loadArtisanCommands(context.currentWorkingDirectory, exec);
+    const options = commands.find((c) => c.name === name)?.definition?.options ?? {};
+    return Object.values(options)
+      .filter((o) => o.name)
+      .map((o) => ({
+        name: o.shortcut ? [o.shortcut, o.name!] : o.name!,
+        description: o.description,
+        type: "option" as const,
+      }));
+  },
+};
