@@ -103,6 +103,12 @@ Each accept key has a **mode** (Amazon Q's per-key model), set under `[keys]`:
 `acceptOnEnter = false` / `acceptOnRightArrow = false` still work, and map onto
 `ignore`.
 
+After <kbd>Enter</kbd> accepts, the menu **stays shut until you type something** —
+a space counts. Otherwise accepting would immediately reopen it and the second
+<kbd>Enter</kbd> would accept *that* instead of running the line, so the command
+could never be submitted. Deliberately not a timer: one either expires while
+you're still deciding, or holds the menu back after you've carried on typing.
+
 <kbd>Esc</kbd> closes the menu **for the rest of the line** — it no longer pops
 back on the next character (upstream reset its hidden flag on the very next
 keystroke, which made Esc look broken). <kbd>Tab</kbd> re-opens it, as does
@@ -346,7 +352,8 @@ alignment breaks.
 
 | `sortMethod` | Behaviour |
 | --- | --- |
-| `frecency` *(default)* | how often **and** how recently you ran it, weighted 4× for the current directory, decaying with a 14-day half-life |
+| `lastUsed` | most recently used first, whatever its type; then spec order |
+| `frecency` *(engine default)* | how often **and** how recently you ran it, weighted 4× for the current directory, decaying with a 14-day half-life |
 | `recency` | Amazon Q's model: anything used once is promoted to priority 75, most-recent first. No decay, no frequency, no directory scope |
 | `alphabetical` | purely by name; usage and spec priority both ignored |
 | `none` | spec-declared priority only |
@@ -356,7 +363,11 @@ Q keys its index on the command alone, so ranking learned in one project applies
 everywhere, and something used once a year ago outranks something you have never
 used, permanently. `recency` is offered for faithfulness, not because it is better.
 
-Both learn from **executed commands and accepted suggestions**. An acceptance
+`lastUsed` is the literal "what I ran last, first" reading. It ignores priority
+entirely, which is the difference from `recency`: Q's model only promotes within
+a 50-75 band, so an *option* (priority 45) barely moves even after you use it.
+
+All usage modes learn from **executed commands and accepted suggestions**. An acceptance
 counts half: you can accept a completion and then think better of it, so running
 it is the stronger signal.
 
