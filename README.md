@@ -309,11 +309,61 @@ description = "#98989D"        # secondary text (dimmed)
 pointer = "›"                  # selected-row marker; must be 1 cell wide
 corners = "rounded"            # "rounded" (macOS menu) or "square"
 surface = "clear"              # "clear" (glass) or a hex fill
+colorByType = true             # tint each row by what it is — see below
+
+[theme.types]                  # per-kind row colour; "" means use foreground
+folder = "#64D2FF"             # systemTeal
+file = ""                      # baseline
+subcommand = "#30D158"         # systemGreen
+option = "#BF5AF2"             # systemPurple
+arg = "#98989D"                # systemGray
+special = "#FF9F0A"            # systemOrange
+shortcut = "#FF9F0A"
+mixin = "#FF9F0A"
 ```
 
 Defaults model a frosted native macOS menu: rounded corners, a hairline border lit
 along the top-left and shaded bottom-right, systemBlue selection, a dimmed icon
 column so the labels stay dominant, and a clear body.
+
+#### Type colours
+
+A folder, a file and a subcommand are different kinds of thing, and a single
+foreground colour made them one undifferentiated list. Each row is now tinted by
+its kind:
+
+| Kind | Colour | Why |
+| --- | --- | --- |
+| `folder` | systemTeal | `ls` has coloured directories blue for decades. Teal rather than systemBlue itself, because the selection bar **is** systemBlue — a blue label on a blue bar is the one combination that loses information |
+| `subcommand` | systemGreen | `ls` green for executables |
+| `option` | systemPurple | a modifier, not a thing |
+| `arg` | systemGray | a placeholder for a value you supply |
+| `file` | *(foreground)* | the commonest row. Colouring the baseline leaves nothing to contrast against |
+
+Only the **label** is tinted. The icon column keeps its dim grey: the glyph
+already encodes the kind by shape, and colouring both made the row read as two
+competing highlights. This also means the colouring still works with
+`icons = "none"`, where it becomes the only type cue.
+
+The selected row is deliberately exempt — it stays a solid systemBlue bar across
+gutter, icon and label, because tinting text inside it just looks muddy.
+
+Set `colorByType = false` for the old single-colour list, or override individual
+kinds under `[theme.types]`. An empty string means "use `foreground`". The keys are
+Fig's suggestion types and the table is `additionalProperties: false`, so a
+plausible-but-wrong guess like `directory = "#fff"` is rejected at startup rather
+than silently colouring nothing.
+
+`termauto doctor` prints the tints in situ, and warns when your terminal reports
+fewer than 24-bit colours — below truecolour the hexes are approximated and two
+nearby tints can collapse onto the same ANSI colour.
+
+> **A related bug this exposed.** Rows carry a `type`, but it used to be copied
+> straight off the spec's suggestion object — where it is almost never set, since
+> the real kind arrives as a separate contextual argument. The icon already used
+> the contextual fallback; `type` didn't. So nearly every row was `undefined` and
+> any colouring would have painted one flat colour. Both now resolve from the same
+> expression, which is what keeps the colour and the glyph agreeing.
 
 #### Icons
 

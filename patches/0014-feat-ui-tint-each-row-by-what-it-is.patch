@@ -1,0 +1,861 @@
+From 5dd69e7a05d945a4d83ff8cc9842f7620c5a1f38 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Sun, 2 Aug 2026 18:26:19 +0300
+Subject: [PATCH 14/14] feat(ui): tint each row by what it is
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A folder, a file and a subcommand read as one undifferentiated list when every
+row shares a foreground colour. Rows are now tinted by kind: systemTeal folders,
+systemGreen subcommands, systemPurple options, grey arguments, files left at the
+baseline. The palette follows what a terminal has meant for decades — `ls`
+colours directories blue and executables green — so it reads correctly before it
+is explained. Teal rather than blue for folders because the selection bar is
+already systemBlue, and a blue label on a blue bar loses information.
+
+Only the label is tinted; the icon column keeps its dim grey. The glyph already
+encodes the kind by shape, and colouring both read as two competing highlights
+per row. It also means the tint still works under icons = "none", where colour
+becomes the only cue.
+
+This needed a correctness fix first. Suggestion.type was copied straight off the
+spec's suggestion object, where it is almost never set — the real kind arrives as
+a separate contextual argument, which is what the ICON already resolved from. So
+nearly every row carried type: undefined and colouring by it would have painted
+one flat colour. Both now derive from the same expression, which is what keeps
+the tint and the glyph agreeing; the 43 changed snapshot lines are that field
+becoming populated.
+
+Off via theme.colorByType, overridable per kind under [theme.types], and
+reported by `doctor` with a warning when the terminal is below truecolour and
+the hexes get quantised.
+---
+ src/runtime/suggestion.ts                     |  17 +-
+ src/tests/colors.test.ts                      | 150 ++++++++++++++++++
+ .../__snapshots__/runtime.test.ts.snap        |  86 +++++-----
+ src/ui/suggestionManager.ts                   |  20 ++-
+ src/ui/ui-doctor.ts                           |  30 +++-
+ src/utils/config.ts                           |  77 +++++++++
+ 6 files changed, 328 insertions(+), 52 deletions(-)
+ create mode 100644 src/tests/colors.test.ts
+
+diff --git a/src/runtime/suggestion.ts b/src/runtime/suggestion.ts
+index 6e03133..c7a2de3 100644
+--- a/src/runtime/suggestion.ts
++++ b/src/runtime/suggestion.ts
+@@ -27,14 +27,19 @@ const getPathy = (type: Fig.SuggestionType | undefined): boolean => {
+ 
+ const toSuggestion = (suggestion: Fig.Suggestion, name?: string, type?: Fig.SuggestionType): Suggestion | undefined => {
+   if (suggestion.name == null) return;
++  const resolvedType = type ?? suggestion.type;
+   return {
+     name: name ?? getLong(suggestion.name),
+     description: suggestion.description,
+-    icon: getIcon(suggestion.icon, type ?? suggestion.type),
++    icon: getIcon(suggestion.icon, resolvedType),
+     allNames: suggestion.name instanceof Array ? suggestion.name : [suggestion.name],
+     priority: getSuggestionPriority(suggestion),
+     insertValue: suggestion.insertValue,
+-    type: suggestion.type,
++    // Deliberately the SAME expression the icon resolved from. Storing the raw
++    // suggestion.type instead left it undefined on most rows — specs rarely set
++    // it, and the real type arrives as the contextual argument — so anything
++    // downstream that switched on it (type colouring) silently saw one bucket.
++    type: resolvedType,
+     hidden: suggestion.hidden,
+   };
+ };
+@@ -73,7 +78,7 @@ function filter<T extends Fig.BaseSuggestion & { name?: Fig.SingleOrArray<string
+                   allNames: s.name,
+                   priority: s.priority ?? 50,
+                   insertValue: s.insertValue,
+-                  type: s.type,
++                  type: s.type ?? suggestionType,
+                   hidden: s.hidden,
+                 }
+               : undefined;
+@@ -86,7 +91,7 @@ function filter<T extends Fig.BaseSuggestion & { name?: Fig.SingleOrArray<string
+                 allNames: [s.name],
+                 priority: s.priority ?? 50,
+                 insertValue: s.insertValue,
+-                type: s.type,
++                type: s.type ?? suggestionType,
+                 hidden: s.hidden,
+               }
+             : undefined;
+@@ -106,7 +111,7 @@ function filter<T extends Fig.BaseSuggestion & { name?: Fig.SingleOrArray<string
+                   allNames: s.name,
+                   insertValue: s.insertValue,
+                   priority: s.priority ?? 50,
+-                  type: s.type,
++                  type: s.type ?? suggestionType,
+                   hidden: s.hidden,
+                 }
+               : undefined;
+@@ -119,7 +124,7 @@ function filter<T extends Fig.BaseSuggestion & { name?: Fig.SingleOrArray<string
+                 allNames: [s.name],
+                 insertValue: s.insertValue,
+                 priority: s.priority ?? 50,
+-                type: s.type,
++                type: s.type ?? suggestionType,
+                 hidden: s.hidden,
+               }
+             : undefined;
+diff --git a/src/tests/colors.test.ts b/src/tests/colors.test.ts
+new file mode 100644
+index 0000000..7b24604
+--- /dev/null
++++ b/src/tests/colors.test.ts
+@@ -0,0 +1,150 @@
++// Copyright (c) Microsoft Corporation.
++// Licensed under the MIT License.
++
++// Type colouring: rows are tinted by what they are, so a folder, a file and a
++// subcommand are distinguishable at a glance.
++//
++// Two separate things are covered, because the feature failed at the first for a
++// long time without anyone noticing:
++//
++//   1. `Suggestion.type` actually being populated. It used to store the raw
++//      spec value, which is almost always absent — the real kind arrives as a
++//      contextual argument — so every row looked untyped and any colouring would
++//      silently have painted one flat colour.
++//   2. the renderer emitting a different colour per kind.
++
++import chalk from "chalk";
++
++import { getSuggestions } from "../runtime/runtime.js";
++import { getConfig, loadConfig } from "../utils/config.js";
++import { Shell } from "../utils/shell.js";
++import { unpackResources } from "../utils/node.js";
++
++// eslint-disable-next-line @typescript-eslint/no-explicit-any
++const loadDefaults = () => loadConfig({ opts: () => ({}) } as any);
++
++/**
++ * Force truecolour. Under jest there is no TTY, so chalk defaults to level 0 and
++ * strips every escape — which would make the positive assertions fail and, worse,
++ * make the `not.toContain` one pass for the wrong reason.
++ */
++let previousLevel: typeof chalk.level;
++
++beforeAll(async () => {
++  previousLevel = chalk.level;
++  chalk.level = 3;
++  await unpackResources();
++  await loadDefaults();
++});
++
++afterAll(() => {
++  chalk.level = previousLevel;
++});
++
++/** The truecolour SGR chalk emits for a hex value, so tests assert on real output. */
++const fg = (hex: string): string => {
++  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
++  return `[38;2;${r};${g};${b}m`;
++};
++
++const typesOf = async (input: string): Promise<Set<string | undefined>> => {
++  const result = await getSuggestions(input, process.cwd(), Shell.Zsh);
++  return new Set((result?.suggestions ?? []).map((s) => s.type));
++};
++
++describe("suggestion type is resolved, not just copied", () => {
++  it("types subcommands", async () => {
++    expect(await typesOf("git ")).toContain("subcommand");
++  });
++
++  it("types options", async () => {
++    expect(await typesOf("git -")).toContain("option");
++  });
++
++  it("distinguishes files from folders in one listing", async () => {
++    const types = await typesOf("cat ");
++    expect([types.has("file"), types.has("folder")]).toEqual([true, true]);
++  });
++
++  // The bug this guards: `type` was read straight off the spec's suggestion
++  // object, where it is almost never set, while the icon used the contextual
++  // fallback. The two must agree, or the colour contradicts the glyph.
++  it("agrees with the icon that was chosen for the same row", async () => {
++    const { suggestions } = (await getSuggestions("cat ", process.cwd(), Shell.Zsh)) ?? { suggestions: [] };
++    const folderIcon = suggestions.find((s) => s.type === "folder")?.icon;
++    const fileIcon = suggestions.find((s) => s.type === "file")?.icon;
++    expect(folderIcon).not.toEqual(fileIcon);
++  });
++});
++
++describe("row colouring", () => {
++  // Reaching past the constructor: SuggestionManager needs a live PTY, and none
++  // of that is involved in turning a list of suggestions into styled strings.
++  const render = async (suggestions: { name: string; type?: string }[]): Promise<string> => {
++    const { SuggestionManager } = await import("../ui/suggestionManager.js");
++    const rows = Object.create(SuggestionManager.prototype)._renderSuggestions(
++      suggestions.map((s) => ({ ...s, icon: "", allNames: [s.name], priority: 50 })),
++      // -1 so no row is selected: the selection bar paints one solid colour over
++      // gutter, icon and label by design, which would mask the tint under test.
++      -1,
++    );
++    return Array.isArray(rows) ? rows.join("") : String(rows);
++  };
++
++  it("gives folders, subcommands and options each a different colour", async () => {
++    const { types } = getConfig().theme;
++    const output = await render([
++      { name: "adir", type: "folder" },
++      { name: "asub", type: "subcommand" },
++      { name: "--anopt", type: "option" },
++    ]);
++    expect(output).toContain(fg(types.folder));
++    expect(output).toContain(fg(types.subcommand));
++    expect(output).toContain(fg(types.option));
++  });
++
++  it("leaves files at the default foreground", async () => {
++    const { foreground, types } = getConfig().theme;
++    // Files are deliberately uncoloured — they are the commonest row, so tinting
++    // the baseline would leave nothing to contrast against.
++    expect(types.file).toEqual("");
++    expect(await render([{ name: "a.txt", type: "file" }])).toContain(fg(foreground));
++  });
++
++  it("falls back to the foreground for an untyped row", async () => {
++    // Real case: `npm run <TAB>` script names are arbitrary strings, neither file
++    // nor folder nor command, and arrive with no type at all.
++    const { foreground } = getConfig().theme;
++    expect(await render([{ name: "build" }])).toContain(fg(foreground));
++  });
++
++  it("paints every row the foreground when colorByType is off", async () => {
++    const theme = getConfig().theme;
++    const previous = theme.colorByType;
++    theme.colorByType = false;
++    try {
++      const output = await render([
++        { name: "adir", type: "folder" },
++        { name: "asub", type: "subcommand" },
++      ]);
++      expect(output).toContain(fg(theme.foreground));
++      expect(output).not.toContain(fg(theme.types.folder));
++      expect(output).not.toContain(fg(theme.types.subcommand));
++    } finally {
++      theme.colorByType = previous;
++    }
++  });
++});
++
++describe("theme.types config", () => {
++  // The rc schema sets additionalProperties: false on this table, so a plausible
++  // wrong guess like `directory = "#fff"` is rejected at load rather than parsing
++  // cleanly and colouring nothing — a config that looks applied but isn't.
++  // loadConfig reads fixed paths under the real home directory and can't be
++  // pointed elsewhere, so the schema itself isn't reachable from here; what is
++  // checkable is that the defaults cover exactly Fig's type union, which is what
++  // the schema is written against.
++  it("covers exactly the Fig suggestion types", () => {
++    expect(Object.keys(getConfig().theme.types).sort()).toEqual(["arg", "file", "folder", "mixin", "option", "shortcut", "special", "subcommand"]);
++  });
++});
+diff --git a/src/tests/runtime/__snapshots__/runtime.test.ts.snap b/src/tests/runtime/__snapshots__/runtime.test.ts.snap
+index 57a4872..5cd2dae 100644
+--- a/src/tests/runtime/__snapshots__/runtime.test.ts.snap
++++ b/src/tests/runtime/__snapshots__/runtime.test.ts.snap
+@@ -19,7 +19,7 @@ exports[`parseCommand alreadyUsedOption 1`] = `
+       "insertValue": undefined,
+       "name": "--bug-report",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+   ],
+ }
+@@ -46,7 +46,7 @@ exports[`parseCommand command 1`] = `
+       "insertValue": undefined,
+       "name": "stage",
+       "priority": 50,
+-      "type": undefined,
++      "type": "subcommand",
+     },
+     {
+       "allNames": [
+@@ -58,7 +58,7 @@ exports[`parseCommand command 1`] = `
+       "insertValue": undefined,
+       "name": "status",
+       "priority": 50,
+-      "type": undefined,
++      "type": "subcommand",
+     },
+     {
+       "allNames": [
+@@ -70,7 +70,7 @@ exports[`parseCommand command 1`] = `
+       "insertValue": undefined,
+       "name": "stash",
+       "priority": 50,
+-      "type": undefined,
++      "type": "subcommand",
+     },
+   ],
+ }
+@@ -95,7 +95,7 @@ exports[`parseCommand completePrefixFilter 1`] = `
+       "insertValue": undefined,
+       "name": "status",
+       "priority": 50,
+-      "type": undefined,
++      "type": "subcommand",
+     },
+   ],
+ }
+@@ -115,7 +115,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--artifact-server-path",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -127,7 +127,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--artifact-server-port",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -139,7 +139,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--container-architecture",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -151,7 +151,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--container-daemon-socket",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -164,7 +164,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--directory",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -177,7 +177,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--dryrun",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -189,7 +189,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--env-file",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -201,7 +201,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--github-instance",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -213,7 +213,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--insecure-secrets",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -225,7 +225,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--json",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -237,7 +237,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--no-recurse",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -249,7 +249,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--no-skip-checkout",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -262,7 +262,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--quiet",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -274,7 +274,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--secret-file",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -287,7 +287,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--verbose",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -300,7 +300,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--workflows",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -313,7 +313,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--help",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -325,7 +325,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       "insertValue": undefined,
+       "name": "--no-descriptions",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+   ],
+ }
+@@ -352,7 +352,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       "insertValue": undefined,
+       "name": "--nobreak",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -364,7 +364,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       "insertValue": undefined,
+       "name": "--nocolor",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -376,7 +376,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       "insertValue": undefined,
+       "name": "--nofilename",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -388,7 +388,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       "insertValue": undefined,
+       "name": "--nofollow",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -400,7 +400,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       "insertValue": undefined,
+       "name": "--nogroup",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -412,7 +412,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       "insertValue": undefined,
+       "name": "--noheading",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -424,7 +424,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       "insertValue": undefined,
+       "name": "--nommap",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -436,7 +436,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       "insertValue": undefined,
+       "name": "--nomultiline",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -449,7 +449,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       "insertValue": undefined,
+       "name": "--norecurse",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -461,7 +461,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       "insertValue": undefined,
+       "name": "--nonumbers",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+   ],
+ }
+@@ -486,7 +486,7 @@ exports[`parseCommand fullyTypedSuggestion 1`] = `
+       "insertValue": undefined,
+       "name": "-W",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -498,7 +498,7 @@ exports[`parseCommand fullyTypedSuggestion 1`] = `
+       "insertValue": undefined,
+       "name": "-w",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+   ],
+ }
+@@ -543,7 +543,7 @@ exports[`parseCommand noArgsArgumentGiven 1`] = `
+       "insertValue": undefined,
+       "name": "--analyzer-output",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -555,7 +555,7 @@ exports[`parseCommand noArgsArgumentGiven 1`] = `
+       "insertValue": undefined,
+       "name": "--analyze",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -567,7 +567,7 @@ exports[`parseCommand noArgsArgumentGiven 1`] = `
+       "insertValue": undefined,
+       "name": "-arcmt-migrate-emit-errors",
+       "priority": 45,
+-      "type": undefined,
++      "type": "option",
+     },
+   ],
+ }
+@@ -607,7 +607,7 @@ exports[`parseCommand optionsSuggestedAfterVariadicArg 1`] = `
+       "insertValue": undefined,
+       "name": "-L",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+     {
+       "allNames": [
+@@ -619,7 +619,7 @@ exports[`parseCommand optionsSuggestedAfterVariadicArg 1`] = `
+       "insertValue": undefined,
+       "name": "-l",
+       "priority": 50,
+-      "type": undefined,
++      "type": "option",
+     },
+   ],
+ }
+@@ -644,7 +644,7 @@ exports[`parseCommand partialPrefixFilter 1`] = `
+       "insertValue": undefined,
+       "name": "stage",
+       "priority": 50,
+-      "type": undefined,
++      "type": "subcommand",
+     },
+     {
+       "allNames": [
+@@ -656,7 +656,7 @@ exports[`parseCommand partialPrefixFilter 1`] = `
+       "insertValue": undefined,
+       "name": "status",
+       "priority": 50,
+-      "type": undefined,
++      "type": "subcommand",
+     },
+     {
+       "allNames": [
+@@ -668,7 +668,7 @@ exports[`parseCommand partialPrefixFilter 1`] = `
+       "insertValue": undefined,
+       "name": "stash",
+       "priority": 50,
+-      "type": undefined,
++      "type": "subcommand",
+     },
+   ],
+ }
+diff --git a/src/ui/suggestionManager.ts b/src/ui/suggestionManager.ts
+index 7e69f24..379374b 100644
+--- a/src/ui/suggestionManager.ts
++++ b/src/ui/suggestionManager.ts
+@@ -269,8 +269,21 @@ export class SuggestionManager {
+   }
+ 
+   private _renderSuggestions(suggestions: Suggestion[], activeSuggestionIdx: number) {
+-    const { activeBackground, activeForeground, foreground, icon: iconColor, pointer } = getConfig().theme;
++    const { activeBackground, activeForeground, foreground, icon: iconColor, pointer, colorByType, types } = getConfig().theme;
+     const inner = suggestionWidth - borderWidth;
++
++    /**
++     * Row colour for an unselected suggestion.
++     *
++     * Falls back to `foreground` for an unknown or uncoloured kind, and for an
++     * empty string — which is how a type opts out of tinting (files, by default).
++     */
++    const labelColor = (type: Suggestion["type"]): string => {
++      if (!colorByType || type == null) return foreground;
++      const tint = types[type as keyof typeof types];
++      return tint ? tint : foreground;
++    };
++
+     return renderBox(
+       suggestions.map((suggestion, idx) => {
+         const active = idx == activeSuggestionIdx;
+@@ -291,7 +304,10 @@ export class SuggestionManager {
+             .hex(activeForeground)
+             .bold(prefix + label);
+         }
+-        return chalk.hex(iconColor)(prefix) + chalk.hex(foreground)(label);
++        // Only the label is tinted. The icon column keeps its own dim grey: the
++        // glyph already encodes the kind by shape, and colouring both made the
++        // row read as two competing highlights instead of one label.
++        return chalk.hex(iconColor)(prefix) + chalk.hex(labelColor(suggestion.type))(label);
+       }),
+       suggestionWidth,
+       this._boxStyle(),
+diff --git a/src/ui/ui-doctor.ts b/src/ui/ui-doctor.ts
+index bd9a302..c8dad42 100644
+--- a/src/ui/ui-doctor.ts
++++ b/src/ui/ui-doctor.ts
+@@ -6,6 +6,7 @@ import { checkLegacyConfigs, checkShellConfigPlugin, checkShellConfigs } from ".
+ import { SuggestionIcons, resolveIconStyle } from "../runtime/icons.js";
+ import { nerdFontDiagnostics } from "../utils/nerdfont.js";
+ import { getConfig } from "../utils/config.js";
++import { launcherName } from "../utils/constants.js";
+ 
+ export const render = async () => {
+   let errors = 0;
+@@ -13,10 +14,35 @@ export const render = async () => {
+   errors += await renderShellPluginIssues();
+   errors += renderShellConfigIssues();
+   renderIconStyle();
++  renderTypeColors();
+ 
+   process.exit(errors);
+ };
+ 
++/**
++ * Show the row tints in situ. Also never an error: a terminal with a narrow
++ * palette still works, chalk just quantises the hexes — and seeing four tints
++ * collapse into two here explains a menu that looks uncoloured far faster than
++ * reading the config does.
++ */
++const renderTypeColors = (): void => {
++  const { colorByType, types, foreground } = getConfig().theme;
++  if (!colorByType) {
++    process.stdout.write(chalk.green("✓") + ` type colours: ${chalk.bold("off")} ${chalk.dim("(every row uses theme.foreground)")}\n`);
++    return;
++  }
++
++  const sample = (["folder", "file", "subcommand", "option", "arg"] as const).map((kind) => chalk.hex(types[kind] || foreground)(kind)).join(chalk.dim(" · "));
++  process.stdout.write(chalk.green("✓") + ` type colours: ${sample}\n`);
++
++  // chalk.level: 1 = 16 colours, 2 = 256, 3 = truecolour. Below 3 the hexes are
++  // approximated, and two nearby tints can land on the same ANSI colour.
++  if (chalk.level < 3) {
++    process.stdout.write(chalk.dim(`  this terminal reports ${chalk.bold(chalk.level === 0 ? "no colour" : `${chalk.level === 1 ? 16 : 256} colours`)}`));
++    process.stdout.write(chalk.dim(`, so the tints above are approximated\n`));
++  }
++};
++
+ /**
+  * Never an error — "no Nerd Font" is a perfectly good state that just gets the
+  * plainer icon set. Reported because a wrong-looking icon column is otherwise
+@@ -84,7 +110,9 @@ const renderShellConfigIssues = (): number => {
+     shellsWithoutConfigs.forEach((shell) => {
+       process.stderr.write(chalk.red("  - ") + shell + "\n");
+     });
+-    process.stderr.write(chalk.yellow("  run " + chalk.underline(chalk.cyan("is init --generate-full-configs")) + " to generate new configurations\n"));
++    process.stderr.write(
++      chalk.yellow("  run " + chalk.underline(chalk.cyan(`${launcherName()} init --generate-full-configs`)) + " to generate new configurations\n"),
++    );
+     return 1;
+   } else {
+     process.stdout.write(chalk.green("✓") + " all shells have configurations\n");
+diff --git a/src/utils/config.ts b/src/utils/config.ts
+index dd9753b..c58ff7e 100644
+--- a/src/utils/config.ts
++++ b/src/utils/config.ts
+@@ -85,6 +85,38 @@ type Theme = {
+   surface: string;
+   /** Icon set. See IconStyle. */
+   icons: IconStyle;
++  /**
++   * Tint each unselected row by what it is — a folder, a file, a subcommand.
++   *
++   * The master switch for `types` below. Off falls every row back to
++   * `foreground`, which is the pre-existing single-colour look.
++   */
++  colorByType: boolean;
++  /** Per-kind row colours. See TypeColors. */
++  types: TypeColors;
++};
++
++/**
++ * Row colour per Fig.SuggestionType.
++ *
++ * The palette follows what a terminal has meant for decades — `ls` colours
++ * directories blue and executables green — rather than inventing a scheme, so it
++ * reads correctly before it is explained. Options take purple and arguments grey
++ * because both are modifiers rather than things, and files stay at `foreground`:
++ * they are the commonest row, and colouring the baseline leaves nothing to
++ * contrast against.
++ *
++ * Missing or empty entries fall back to `foreground`.
++ */
++type TypeColors = {
++  folder: string;
++  file: string;
++  subcommand: string;
++  option: string;
++  arg: string;
++  special: string;
++  shortcut: string;
++  mixin: string;
+ };
+ 
+ type Config = {
+@@ -237,6 +269,24 @@ const configSchema = {
+         corners: { type: "string", nullable: true, enum: ["rounded", "square"] },
+         surface: { type: "string", nullable: true },
+         icons: { type: "string", nullable: true, enum: ["auto", "codicon", "nerd", "unicode", "emoji", "none"] },
++        colorByType: { type: "boolean", nullable: true },
++        types: {
++          type: "object",
++          nullable: true,
++          properties: {
++            folder: { type: "string", nullable: true },
++            file: { type: "string", nullable: true },
++            subcommand: { type: "string", nullable: true },
++            option: { type: "string", nullable: true },
++            arg: { type: "string", nullable: true },
++            special: { type: "string", nullable: true },
++            shortcut: { type: "string", nullable: true },
++            mixin: { type: "string", nullable: true },
++          },
++          // The keys are Fig.SuggestionType values, not free text — a typo like
++          // `directory = "#fff"` would otherwise parse fine and colour nothing.
++          additionalProperties: false,
++        },
+       },
+     },
+   },
+@@ -295,6 +345,21 @@ let globalConfig: Config = {
+     corners: "rounded",
+     surface: "clear",
+     icons: "auto",
++    colorByType: true,
++    // Apple's system palette, so the tints sit alongside activeBackground
++    // (systemBlue) rather than clashing with it. systemTeal for folders rather
++    // than systemBlue itself: the selection bar is already blue, and a blue label
++    // on a blue bar is the one combination that loses information.
++    types: {
++      folder: "#64D2FF", // systemTeal — `ls` blue, moved off the selection colour
++      file: "", // baseline; falls back to foreground
++      subcommand: "#30D158", // systemGreen — `ls` executable green
++      option: "#BF5AF2", // systemPurple — a modifier, not a thing
++      arg: "#98989D", // systemGray — a placeholder for a value you supply
++      special: "#FF9F0A", // systemOrange
++      shortcut: "#FF9F0A",
++      mixin: "#FF9F0A",
++    },
+   },
+ };
+ 
+@@ -359,6 +424,18 @@ export const loadConfig = async (program: Command) => {
+           // useNerdFont predates theme.icons and only ever gated fig:// icon URLs.
+           // Honoured as a shorthand so existing rc files keep working.
+           icons: config?.theme?.icons ?? (config?.useNerdFont ? "codicon" : globalConfig.theme.icons),
++          colorByType: config?.theme?.colorByType ?? globalConfig.theme.colorByType,
++          // Also per-key: recolouring folders alone must not blank the other kinds.
++          types: {
++            folder: config?.theme?.types?.folder ?? globalConfig.theme.types.folder,
++            file: config?.theme?.types?.file ?? globalConfig.theme.types.file,
++            subcommand: config?.theme?.types?.subcommand ?? globalConfig.theme.types.subcommand,
++            option: config?.theme?.types?.option ?? globalConfig.theme.types.option,
++            arg: config?.theme?.types?.arg ?? globalConfig.theme.types.arg,
++            special: config?.theme?.types?.special ?? globalConfig.theme.types.special,
++            shortcut: config?.theme?.types?.shortcut ?? globalConfig.theme.types.shortcut,
++            mixin: config?.theme?.types?.mixin ?? globalConfig.theme.types.mixin,
++          },
+         },
+       };
+     }
+-- 
+2.51.0
+

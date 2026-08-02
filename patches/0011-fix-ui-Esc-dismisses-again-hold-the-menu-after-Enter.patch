@@ -1,7 +1,7 @@
 From deed95c8fb8e6358c80adce2463a18901b9438a5 Mon Sep 17 00:00:00 2001
 From: AmirSalahY <hello@noury.ch>
 Date: Sun, 2 Aug 2026 16:10:08 +0300
-Subject: [PATCH 11/13] fix(ui): Esc dismisses again; hold the menu after
+Subject: [PATCH 11/14] fix(ui): Esc dismisses again; hold the menu after
  Enter; lastUsed ordering
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
