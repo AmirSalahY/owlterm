@@ -190,9 +190,9 @@ make complete Q="xcodebuild -scheme "  # run this from inside an Xcode project
 Expected output:
 
 ```
-720 specs loaded
-ours: 6 (3 override bundled, 3 unique)
-✓ specs.path resolved — confirmed via artisan, rtk, sail (present only in this checkout)
+721 specs loaded
+ours: 7 (3 override bundled, 4 unique)
+✓ specs.path resolved — confirmed via artisan, rtk, sail, termauto (present only in this checkout)
 ```
 
 It keys on a spec that exists *only* here, because most of ours override bundled
@@ -411,7 +411,7 @@ Fig's corpus (`@withfig/autocomplete`, 716 specs) is bundled whole, so `git`,
 `docker`, `npm`, `composer`, `php` and hundreds more already work — there is
 nothing to add for those, and writing our own would just shadow a better spec.
 
-Our six exist because Fig's corpus is missing or thin there:
+Our seven exist because Fig's corpus is missing or thin there:
 
 | Spec | Why |
 | --- | --- |
@@ -421,6 +421,7 @@ Our six exist because Fig's corpus is missing or thin there:
 | `adb` | augmented with connected-device completion |
 | `xcodebuild` | augmented with real schemes and simulators |
 | `rtk` | private tool, no upstream spec |
+| `termauto` | this tool. Fig has no spec for it under any name — not `is`, not `inshellisense` |
 
 `artisan` and `sail` are **fully dynamic**: the command list comes from
 `artisan list --format=json`, so it includes whatever the project actually has —
