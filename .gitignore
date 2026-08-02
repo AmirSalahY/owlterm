@@ -14,3 +14,9 @@ frecency/*.jsonl
 node_modules/
 *.log
 .DS_Store
+
+# Regenerated from vendor/inshellisense's git history by `npm run patches`, so
+# they are build output rather than source. Kept out of history because the
+# exported .patch files rewrite in full on every re-export — the [PATCH n/m]
+# counter alone touches every file whenever one is added.
+patches/
