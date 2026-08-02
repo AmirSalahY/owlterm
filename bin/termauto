@@ -27,6 +27,8 @@ done
 ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 ENTRY="$ROOT/vendor/inshellisense/build/index.js"
 DEFAULT_CONFIG="$ROOT/termauto.config.json"
+UPDATE_CHECK="$ROOT/scripts/check-update.mjs"
+UPDATE="$ROOT/scripts/update.mjs"
 
 if [[ ! -f "$ENTRY" ]]; then
   echo "termauto: engine not built. Run: npm run setup" >&2
@@ -47,6 +49,32 @@ export TERMAUTO_DEFAULT_CONFIG="$DEFAULT_CONFIG"
 # worth it. A malformed package.json simply leaves it unset, which is harmless.
 ISTERM_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/package.json" 2>/dev/null | head -1)"
 [[ -n "$ISTERM_VERSION" ]] && export ISTERM_VERSION || unset ISTERM_VERSION
+
+case "${1:-}" in
+  update)
+    exec node "$UPDATE" "$ROOT"
+    ;;
+esac
+
+should_check_updates=true
+for arg in "$@"; do
+  case "$arg" in
+    --)
+      break
+      ;;
+    -c | --check | -v | --version | -h | --help)
+      should_check_updates=false
+      break
+      ;;
+    init | reinit | complete | specs | doctor | alias | uninstall | update)
+      should_check_updates=false
+      break
+      ;;
+  esac
+done
+if [[ "$should_check_updates" == true && -t 2 && "${TERMAUTO_UPDATE_CHECK:-1}" != "0" && -f "$UPDATE_CHECK" ]]; then
+  node "$UPDATE_CHECK" "$ROOT" >&2 || true
+fi
 
 # `init` and `reinit` call unpackResources(), which in a non-SEA build reads
 # `process.cwd()/shell` and `process.cwd()/node_modules/@withfig/autocomplete/build`.

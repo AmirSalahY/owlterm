@@ -82,6 +82,27 @@ termauto
 
 Type `git ch`, `yarn`, or `xcodebuild -scheme` and the dropdown appears.
 
+### Updates
+
+When a tagged GitHub Release is newer than the installed `package.json` version,
+new interactive `termauto` sessions print a short notice:
+
+```text
+termauto 0.1.1 is available; current is 0.1.0.
+Run: termauto update
+```
+
+The check is cached under `~/.termauto/update-check.json` for six hours and is
+skipped for hot-path commands such as `complete`, `alias`, and `init`.
+
+```sh
+termauto update
+```
+
+`termauto update` fetches the latest GitHub Release tag, checks it out, installs
+dependencies, and reruns setup. It refuses to run over local changes in the
+checkout.
+
 > **On names.** The command is `termauto`. The on-disk locations are still
 > upstream's — config at `~/.config/inshellisense/rc.toml`, data at
 > `~/.inshellisense/` — because renaming those means editing files we'd rather
@@ -619,6 +640,20 @@ make upstream    # fetch, rebase our 2 commits, rebuild, re-export patches
 Then bump `PINNED_COMMIT` in `scripts/setup.mjs` to the new base (the command
 prints it). `patches/` is gitignored, so there is nothing to commit — the refresh
 only updates this machine.
+
+## Releases
+
+Releases are tag-driven. Bump `package.json`, commit it, then tag the same
+version with a leading `v`:
+
+```sh
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+`.github/workflows/release.yml` validates that the tag matches `package.json`,
+builds the specs, and creates or updates the GitHub Release. That release is the
+metadata `termauto` checks when deciding whether to show the update notice.
 
 Our eight commits, kept separate so rebases stay cheap:
 

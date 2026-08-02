@@ -126,6 +126,11 @@ const spec: Fig.Spec = {
       options: [helpOption],
     },
     {
+      name: "update",
+      description: "Update termauto to the latest GitHub Release tag",
+      options: [helpOption],
+    },
+    {
       name: "uninstall",
       description: "Remove all cached resources and configuration",
       options: [helpOption],
