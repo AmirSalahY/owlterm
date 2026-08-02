@@ -207,12 +207,18 @@ step(7, "Configuring specs path");
   // Upstream reads ~/.inshellisenserc first, then ~/.config/inshellisense/rc.toml.
   const xdg = path.join(os.homedir(), ".config", "inshellisense", "rc.toml");
   const legacy = path.join(os.homedir(), ".inshellisenserc");
-  const block = `[specs]
-path = ["${SPECS_BUILD}"]
-
-maxSuggestions = 10
+  // Document-root keys MUST come before the first [table] header. TOML scopes
+  // everything after a header into that table, so `maxSuggestions` written below
+  // [specs] parses as specs.maxSuggestions and is silently ignored.
+  const block = `maxSuggestions = 10
 useFrecency = true
-useNerdFont = false
+
+[theme]
+icons = "auto"     # "auto" | "nerd" | "unicode" | "emoji" | "none"
+surface = "clear"  # "clear" lets your terminal's transparency/blur show through
+
+[specs]
+path = ["${SPECS_BUILD}"]
 `;
 
   const existing = [xdg, legacy].filter((p) => fs.existsSync(p));

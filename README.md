@@ -146,8 +146,9 @@ with an `upstream` remote so our changes stay a rebasable series. Our engine
 changes live in **`patches/`**, which is the only portable record of them.
 
 ```
-patches/            our 4 engine commits — WITHOUT these: no frecency, no
-                    Enter/Right accept, no macOS styling, Esc stays broken
+patches/            our 5 engine commits — WITHOUT these: no frecency, no
+                    Enter/Right accept, no macOS styling, emoji icons, Esc
+                    stays broken
 scripts/setup.mjs   bootstrap: clone pinned engine, apply patches, build, configure
 specs/src/          our specs (filename = command name)
 specs/src/lib/      shared generators + spec-augment helpers
@@ -196,22 +197,87 @@ path = ["/abs/path/to/termauto/specs/build"]   # machine-specific
 
 maxSuggestions = 10       # default 5 is cramped for e.g. xcodebuild's 78 options
 useFrecency = true        # our addition; false disables usage-based ranking
-useNerdFont = false       # true resolves fig:// icons to Nerd Font glyphs
+useNerdFont = false       # legacy shorthand for theme.icons = "nerd"
 acceptOnEnter = true      # our addition; Enter accepts the highlighted suggestion
 acceptOnRightArrow = true # our addition; Right accepts at end of line only
 
 [theme]                        # all ours; upstream hardcoded one purple
-border = "#3A3A3C"             # hairline border
+icons = "auto"                 # "auto" | "codicon" | "unicode" | "emoji" | "none"
+border = "#2C2C2E"             # hairline border, shaded (bottom/right) edge
+borderHighlight = "#48484A"    # lit (top/left) edge — reads as a raised panel
 activeBackground = "#0A84FF"   # systemBlue selection
 activeForeground = "#FFFFFF"   # selected row text
+foreground = "#E5E5EA"         # unselected row text
+icon = "#8E8E93"               # icon column on unselected rows (dimmed)
 description = "#98989D"        # secondary text (dimmed)
-pointer = "▸"                  # selected-row marker; must be 1 cell wide
+pointer = "›"                  # selected-row marker; must be 1 cell wide
 corners = "rounded"            # "rounded" (macOS menu) or "square"
+surface = "clear"              # "clear" (glass) or a hex fill
 ```
 
-Defaults model a native macOS menu: rounded corners, hairline border, systemBlue
-selection, dimmed secondary text, and no body fill so your terminal background
-shows through.
+Defaults model a frosted native macOS menu: rounded corners, a hairline border lit
+along the top-left and shaded bottom-right, systemBlue selection, a dimmed icon
+column so the labels stay dominant, and a clear body.
+
+#### Icons
+
+Upstream shipped emoji, which are double-width and — for the ones carrying a
+variation selector — measured inconsistently across terminals, so the icon column
+knocked labels out of alignment. Every glyph in the `nerd` and `unicode` sets is
+single-cell, enforced by a test.
+
+| `theme.icons` | What you get |
+| --- | --- |
+| `auto` *(default)* | `codicon` when the terminal can render them, else `unicode` |
+| `codicon` | [Codicons](https://microsoft.github.io/vscode-codicons/) — VS Code's own icon set, the same artwork IntelliSense uses for its completion list |
+| `unicode` | Geometric symbols (`◆ ▪ ▸ · ★`) — **the only set that renders in every terminal** |
+| `emoji` | Upstream's set, alignment caveat and all |
+| `none` | No icon column |
+
+`nerd` is accepted as a deprecated alias for `codicon`.
+
+**Which set works everywhere: `unicode`.** Its glyphs are real assigned
+codepoints, so when a terminal's font lacks one the OS substitutes a font that
+has it — the same mechanism that draws 📄 in Menlo, which contains no emoji at
+all, and `╭` in Monaco, which has no rounded corners. The private use area gets
+no such fallback: no system font claims those codepoints, so Codicons render as
+blanks or boxes in any terminal not set to a patched font. That asymmetry is the
+whole story, and why `unicode` is the safe default.
+
+Run `scripts/icon-check.sh` in a terminal to see which sets it can draw.
+
+**Codicons are delivered by a Nerd Font.** A terminal renders text and nothing
+else, so an icon has to *be* a character: Codicons occupy U+EA60–U+EC1E in the
+private use area, and a patched font is the only way those codepoints resolve to
+artwork. Nerd Font is the container; Codicons are the contents.
+
+`auto` therefore checks two things — that a patched font is installed, and that
+this terminal is actually configured to use it. The second matters: a font
+selected in iTerm does nothing for the VS Code terminal, which has its own
+`terminal.integrated.fontFamily` and falls back to Menlo. Installing is a
+one-liner, and you must also select it as your terminal's font:
+
+```sh
+brew install --cask font-jetbrains-mono-nerd-font
+```
+
+`is doctor` prints the resolved style with a sample row and names which of the two
+conditions failed, which is the quickest way to tell "no font installed" from
+"font installed but this terminal isn't using it". `IS_ICONS=emoji is` overrides
+the style for one session without touching config.
+
+Why not SVG: no terminal renders SVG. The image protocols that exist (iTerm2
+inline images, Kitty, Sixel) take rasterised bitmaps, aren't supported by every
+terminal, and — decisively — sit outside the character-cell model this renderer
+patches into on every keystroke. See `SuggestionRenderer`.
+
+#### Glass
+
+ANSI has no blur, so `surface = "clear"` gets there by painting no background at
+all: the terminal shows through the menu, and your terminal's own transparency and
+blur become the frosted backdrop. In iTerm2 that's Settings → Profiles → Window →
+Transparency + Blur. Set `surface` to a hex value instead for a flat tint on an
+opaque terminal.
 
 The `pointer` sits in a fixed-width gutter rendered on **every** row, so the text
 never shifts sideways as the selection moves. Keep it one cell wide or the box
@@ -311,7 +377,7 @@ make upstream    # fetch, rebase our 2 commits, rebuild, re-export patches
 Then bump `PINNED_COMMIT` in `scripts/setup.mjs` to the new base (the command
 prints it) and commit the refreshed `patches/`.
 
-Our four commits, kept separate so rebases stay cheap:
+Our five commits, kept separate so rebases stay cheap:
 
 - **`fix(complete): load config so local specs resolve`** — an upstream bug:
   `complete` never called `loadConfig()`, so `specs.path` stayed `[]` and the
@@ -324,6 +390,13 @@ Our four commits, kept separate so rebases stay cheap:
   which calls `Function.prototype.apply` with `text` as *thisArg* and **no
   arguments**, so chalk returned `""` and every border character disappeared.
   Dormant only because no caller ever passed a `borderColor`. **Also PR-worthy.**
+- **`feat(ui): icon sets (nerd/unicode/emoji) + frosted glass menu styling`** —
+  swaps the emoji icon column for Nerd Font glyphs with a plain-Unicode fallback
+  (see [Icons](#icons)), dims the icon column, and adds a lit/shaded border plus
+  `theme.surface`. Also tightens the `specs` schema: a root key written below the
+  `[specs]` header is TOML-scoped *into* that table, so it validated fine while
+  being silently ignored — which is how the generated config's
+  `maxSuggestions = 10` sat dead and everyone got 5.
 
 > **Heads-up on testing the dropdown's looks:** `src/tests/ui/` — the only suite
 > that snapshots the rendered dropdown — is **excluded** from `npm test`
