@@ -1,0 +1,336 @@
+From 696d8c85dfffca543bfa39478605e6f533036727 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <hello@noury.ch>
+Date: Sun, 2 Aug 2026 12:30:58 +0300
+Subject: [PATCH 06/13] fix(ui): don't pick nerd icons for a terminal that
+ can't render them
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A font being installed doesn't mean the terminal uses it. With MesloLGS NF
+installed and selected in iTerm, the VS Code/Cursor integrated terminal had no
+font configured, fell back to Menlo, and drew every icon as tofu.
+
+Detection now also reads terminal.integrated.fontFamily (falling back to
+editor.fontFamily) from the settings.json of whichever VS Code fork is running,
+identified by trying the known app dirs since they all report TERM_PROGRAM=vscode.
+Other terminals are assumed configured rather than guessed at — silently dropping
+to the plain set on a working terminal gives the user no signal.
+
+is doctor now distinguishes 'no font installed' from 'font installed but this
+terminal isn't using it' and names the setting to change.
+
+Logic is exposed as pure helpers (isNerdFontName, parseVscodeFontSetting,
+scanForNerdFont) because jest's process.env is a JS-side copy that native
+os.homedir() ignores, so $HOME-based fixtures silently test the real machine.
+
+---
+ src/tests/utils/nerdfont.test.ts | 113 +++++++++++++++++++++++++++++++
+ src/ui/ui-doctor.ts              |  25 +++++--
+ src/utils/nerdfont.ts            |  95 ++++++++++++++++++++++----
+ 3 files changed, 214 insertions(+), 19 deletions(-)
+ create mode 100644 src/tests/utils/nerdfont.test.ts
+
+diff --git a/src/tests/utils/nerdfont.test.ts b/src/tests/utils/nerdfont.test.ts
+new file mode 100644
+index 0000000..161f509
+--- /dev/null
++++ b/src/tests/utils/nerdfont.test.ts
+@@ -0,0 +1,113 @@
++// Copyright (c) Microsoft Corporation.
++// Licensed under the MIT License.
++
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++
++import { isNerdFontName, parseVscodeFontSetting, scanForNerdFont } from "../../utils/nerdfont.js";
++
++// Directories are passed in rather than derived from $HOME: jest's process.env is
++// a JS-side copy, so os.homedir() — which reads the real environment through
++// libuv — ignores any override a test sets.
++const fixture = (build: (dir: string) => void): string => {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nf-"));
++  build(dir);
++  return dir;
++};
++
++const cleanup: string[] = [];
++const tempTree = (build: (dir: string) => void): string => {
++  const dir = fixture(build);
++  cleanup.push(dir);
++  return dir;
++};
++
++afterAll(() => cleanup.forEach((dir) => fs.rmSync(dir, { recursive: true, force: true })));
++
++const writeFont = (dir: string, name: string) => {
++  fs.mkdirSync(dir, { recursive: true });
++  fs.writeFileSync(path.join(dir, name), "");
++};
++
++describe("nerd font naming", () => {
++  it.each([
++    "MesloLGS NF Regular.ttf",
++    "JetBrainsMonoNerdFont-Regular.ttf",
++    "Hack Nerd Font Mono.ttf",
++    "FiraCode Nerd Font",
++    // The configured family name, not a filename — the vscode path matches on this.
++    "MesloLGS NF",
++  ])("recognises %s", (name) => {
++    expect(isNerdFontName(name)).toBe(true);
++  });
++
++  it.each(["JetBrainsMono-Regular.ttf", "Menlo", "Monaco", "SF Mono", "Consolas"])("rejects %s", (name) => {
++    expect(isNerdFontName(name)).toBe(false);
++  });
++
++  it("rejects an unset font", () => {
++    expect(isNerdFontName(undefined)).toBe(false);
++  });
++});
++
++describe("font directory scan", () => {
++  it("finds a patched font", () => {
++    const dir = tempTree((d) => writeFont(d, "MesloLGS NF Regular.ttf"));
++    expect(scanForNerdFont([dir])).toBe(true);
++  });
++
++  it("reports none when only unpatched fonts are present", () => {
++    const dir = tempTree((d) => writeFont(d, "JetBrainsMono-Regular.ttf"));
++    expect(scanForNerdFont([dir])).toBe(false);
++  });
++
++  it("descends into nested font trees", () => {
++    // Linux system fonts sit under e.g. /usr/share/fonts/truetype/<family>/.
++    const dir = tempTree((d) => writeFont(path.join(d, "truetype", "hack"), "Hack Nerd Font.ttf"));
++    expect(scanForNerdFont([dir])).toBe(true);
++  });
++
++  it("survives directories that don't exist or can't be read", () => {
++    expect(scanForNerdFont(["/nope/not/here"])).toBe(false);
++  });
++});
++
++describe("vscode font setting", () => {
++  // The bug this guards: a font installed and selected in iTerm, while the
++  // editor's integrated terminal had none configured and silently fell back to
++  // Menlo — which renders every icon as tofu.
++  it("returns nothing when no font is configured", () => {
++    expect(parseVscodeFontSetting(`{ "editor.formatOnSave": true }`)).toBeUndefined();
++  });
++
++  it("reads the terminal font", () => {
++    expect(parseVscodeFontSetting(`{ "terminal.integrated.fontFamily": "MesloLGS NF" }`)).toEqual("MesloLGS NF");
++  });
++
++  it("prefers the terminal font over the editor font", () => {
++    const settings = `{\n  "editor.fontFamily": "Menlo",\n  "terminal.integrated.fontFamily": "MesloLGS NF"\n}`;
++    expect(parseVscodeFontSetting(settings)).toEqual("MesloLGS NF");
++  });
++
++  it("falls back to editor.fontFamily, which the terminal inherits", () => {
++    expect(parseVscodeFontSetting(`{ "editor.fontFamily": "Hack Nerd Font" }`)).toEqual("Hack Nerd Font");
++  });
++
++  it("ignores a commented-out setting", () => {
++    // settings.json routinely carries commented-out keys; reading one as live
++    // would claim a font the terminal isn't actually using.
++    const settings = `{\n  // "terminal.integrated.fontFamily": "MesloLGS NF",\n  "editor.tabSize": 4,\n}`;
++    expect(parseVscodeFontSetting(settings)).toBeUndefined();
++  });
++
++  it("tolerates the trailing commas that make settings.json invalid JSON", () => {
++    const settings = `{\n  "terminal.integrated.fontFamily": "MesloLGS NF",\n  "editor.tabSize": 4,\n}`;
++    expect(parseVscodeFontSetting(settings)).toEqual("MesloLGS NF");
++  });
++
++  it("handles a font stack, matching on the whole declaration", () => {
++    const settings = `{ "terminal.integrated.fontFamily": "MesloLGS NF, Menlo, monospace" }`;
++    expect(isNerdFontName(parseVscodeFontSetting(settings))).toBe(true);
++  });
++});
+diff --git a/src/ui/ui-doctor.ts b/src/ui/ui-doctor.ts
+index b568d2b..c6f87f9 100644
+--- a/src/ui/ui-doctor.ts
++++ b/src/ui/ui-doctor.ts
+@@ -4,7 +4,7 @@
+ import chalk from "chalk";
+ import { checkLegacyConfigs, checkShellConfigPlugin, checkShellConfigs } from "../utils/shell.js";
+ import { SuggestionIcons, resolveIconStyle } from "../runtime/icons.js";
+-import { hasNerdFont } from "../utils/nerdfont.js";
++import { nerdFontDiagnostics } from "../utils/nerdfont.js";
+ import { getConfig } from "../utils/config.js";
+ 
+ export const render = async () => {
+@@ -28,15 +28,28 @@ const renderIconStyle = (): void => {
+   const sample = [SuggestionIcons.Subcommand, SuggestionIcons.Option, SuggestionIcons.File, SuggestionIcons.Folder].join(" ");
+   process.stdout.write(chalk.green("✓") + ` icons: ${chalk.bold(style)} ${style === "none" ? "" : chalk.dim(`(${sample})`)}\n`);
+ 
+-  if (getConfig().theme.icons !== "auto") return;
+-  if (hasNerdFont()) {
+-    process.stdout.write(chalk.dim("  a Nerd Font is installed — if the glyphs above are blank boxes, select it as your terminal's font\n"));
+-  } else {
++  if (getConfig().theme.icons !== "auto") {
++    process.stdout.write(chalk.dim(`  set explicitly via theme.icons; "auto" would pick for you\n`));
++    return;
++  }
++
++  const { installed, terminalConfigured } = nerdFontDiagnostics();
++  if (!installed) {
+     process.stdout.write(
+-      chalk.dim("  no Nerd Font detected; install one (e.g. ") +
++      chalk.dim("  no Nerd Font installed; add one (") +
+         chalk.cyan("brew install --cask font-jetbrains-mono-nerd-font") +
+         chalk.dim(") for the full icon set\n"),
+     );
++  } else if (!terminalConfigured) {
++    // The tofu case: font present, but this terminal isn't set to use it.
++    process.stdout.write(
++      chalk.dim("  a Nerd Font is installed but this terminal isn't using it, so the plain set was chosen.\n") +
++        chalk.dim("  set ") +
++        chalk.cyan("terminal.integrated.fontFamily") +
++        chalk.dim(' to e.g. "MesloLGS NF" to get the full icon set here\n'),
++    );
++  } else {
++    process.stdout.write(chalk.dim("  if the glyphs above are blank boxes, your terminal's font isn't the Nerd Font it reports\n"));
+   }
+ };
+ 
+diff --git a/src/utils/nerdfont.ts b/src/utils/nerdfont.ts
+index e24d784..00e88c3 100644
+--- a/src/utils/nerdfont.ts
++++ b/src/utils/nerdfont.ts
+@@ -7,15 +7,9 @@ import path from "node:path";
+ 
+ /**
+  * Nerd Fonts are how a terminal gets FontAwesome/Devicons/Codicons: the glyphs
+- * live in the font's private use area, so they only render if the font the
+- * terminal is configured with is a patched one. There is no way to ask a
+- * terminal which font it is using, so the best available signal is whether a
+- * patched font is installed at all — someone who installed one is essentially
+- * always using it.
+- *
+- * Wrong in one direction only: a user with a Nerd Font installed but not
+- * selected sees tofu, and sets `theme.icons = "unicode"` to opt out. The
+- * reverse (patched font in use but undetected) just means plainer icons.
++ * live in the font's private use area, so they render only if the font the
++ * terminal is *configured with* is a patched one. Being installed is therefore
++ * necessary but not sufficient — see terminalUsesNerdFont.
+  */
+ const FONT_DIRS = (): string[] => {
+   const home = os.homedir();
+@@ -23,7 +17,10 @@ const FONT_DIRS = (): string[] => {
+     case "darwin":
+       return [path.join(home, "Library", "Fonts"), "/Library/Fonts", "/System/Library/Fonts"];
+     case "win32":
+-      return [path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "Microsoft", "Windows", "Fonts"), path.join(process.env.WINDIR ?? "C:\\Windows", "Fonts")];
++      return [
++        path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "Microsoft", "Windows", "Fonts"),
++        path.join(process.env.WINDIR ?? "C:\\Windows", "Fonts"),
++      ];
+     default:
+       return [path.join(home, ".local", "share", "fonts"), path.join(home, ".fonts"), "/usr/share/fonts", "/usr/local/share/fonts"];
+   }
+@@ -32,6 +29,9 @@ const FONT_DIRS = (): string[] => {
+ // "JetBrainsMonoNerdFont-Regular.ttf", "Hack Nerd Font Mono.ttf", "MesloLGS NF.ttf"
+ const NERD_FONT_FILE = /nerd[ _-]?font|\bNF\b|NerdFont/i;
+ 
++/** Matches both font *files* and configured font *family* names ("MesloLGS NF"). */
++export const isNerdFontName = (name: string | undefined): boolean => name != null && NERD_FONT_FILE.test(name);
++
+ const scan = (dir: string, depth: number): boolean => {
+   let entries: fs.Dirent[];
+   try {
+@@ -50,16 +50,85 @@ const scan = (dir: string, depth: number): boolean => {
+   return false;
+ };
+ 
++/**
++ * Which editor wrote the settings file backing an integrated terminal. VS Code
++ * and every fork of it sets TERM_PROGRAM=vscode without saying *which* fork, so
++ * the only way to find the right settings.json is to try the known locations.
++ */
++const VSCODE_APP_DIRS = ["Cursor", "Code", "Code - Insiders", "VSCodium", "Windsurf"];
++
++const vscodeSettingsPaths = (): string[] => {
++  const home = os.homedir();
++  const base =
++    process.platform === "darwin"
++      ? path.join(home, "Library", "Application Support")
++      : process.platform === "win32"
++      ? process.env.APPDATA ?? path.join(home, "AppData", "Roaming")
++      : path.join(home, ".config");
++  return VSCODE_APP_DIRS.map((app) => path.join(base, app, "User", "settings.json"));
++};
++
++/**
++ * settings.json is JSONC — comments and trailing commas — so JSON.parse chokes on
++ * it. A regex for the one key we care about is both simpler and far more tolerant
++ * than shipping a JSONC parser for a font-name lookup. Commented-out lines are
++ * dropped first so a `// "…fontFamily": "…"` note doesn't read as the real value.
++ */
++export const parseVscodeFontSetting = (contents: string): string | undefined => {
++  const live = contents
++    .split("\n")
++    .filter((line) => !line.trimStart().startsWith("//"))
++    .join("\n");
++  // terminal.integrated.fontFamily wins; editor.fontFamily is the documented
++  // fallback the terminal inherits when the terminal-specific key is unset.
++  const terminal = /"terminal\.integrated\.fontFamily"\s*:\s*"([^"]*)"/.exec(live);
++  const editor = /"editor\.fontFamily"\s*:\s*"([^"]*)"/.exec(live);
++  return (terminal ?? editor)?.[1];
++};
++
++const readVscodeTerminalFont = (file: string): string | undefined => {
++  try {
++    return parseVscodeFontSetting(fs.readFileSync(file, "utf8"));
++  } catch {
++    return undefined;
++  }
++};
++
++/**
++ * A font being *installed* doesn't mean the terminal is *using* it — the case
++ * that motivated this: a machine with MesloLGS NF installed and selected in
++ * iTerm still drew tofu in the VS Code terminal, which had no font configured
++ * and so fell back to Menlo.
++ *
++ * Only decided for editors whose config we can actually read. Every other
++ * terminal returns true rather than guessing: silently dropping to the plain set
++ * on a correctly-configured terminal is the worse failure, since the user gets
++ * no signal that anything was decided for them.
++ */
++const terminalUsesNerdFont = (): boolean => {
++  if (process.env.TERM_PROGRAM !== "vscode") return true;
++  return isNerdFontName(vscodeSettingsPaths().map(readVscodeTerminalFont).find(Boolean));
++};
++
++/** Exposed so tests can drive the scan against a fixture tree. */
++export const scanForNerdFont = (dirs: string[]): boolean => dirs.some((dir) => scan(dir, 2));
++
+ let cached: boolean | undefined;
+ 
+-/** Cached for the process: fonts don't get installed mid-session. */
++/** Cached for the process: neither fonts nor terminal settings change mid-session. */
+ export const hasNerdFont = (): boolean => {
+   if (cached != null) return cached;
+-  cached = FONT_DIRS().some((dir) => scan(dir, 2));
++  cached = scanForNerdFont(FONT_DIRS()) && terminalUsesNerdFont();
+   return cached;
+ };
+ 
+-/** Test seam — also lets `is doctor` report both branches. */
++/** Test seam — also lets `is doctor` report each branch separately. */
+ export const resetNerdFontCache = (value?: boolean): void => {
+   cached = value;
+ };
++
++/** Split out so the doctor can say *which* of the two conditions failed. */
++export const nerdFontDiagnostics = (): { installed: boolean; terminalConfigured: boolean } => ({
++  installed: scanForNerdFont(FONT_DIRS()),
++  terminalConfigured: terminalUsesNerdFont(),
++});
+-- 
+2.51.0
+

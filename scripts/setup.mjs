@@ -2,16 +2,19 @@
 // termauto bootstrap — idempotent, safe to re-run.
 //
 // vendor/ is intentionally NOT committed (it keeps its own git repo so our patches
-// stay rebasable). So on a fresh machine there is no engine at all, and our two
-// vendor changes exist only as patch files. This script reconstructs the whole
-// thing from scratch:
+// stay rebasable). So on a fresh machine there is no engine at all, and our vendor
+// changes exist only as the committed patches/*.patch files. This script
+// reconstructs the whole thing from scratch:
 //
 //   1. check the Node version   (engine requires >=18 <23)
 //   2. clone inshellisense at a PINNED commit + apply patches/*.patch
 //   3. npm ci && build
 //   4. unpack the Fig spec corpus into ~/.inshellisense/spec
 //   5. compile our specs
-//   6. write (or tell you how to merge) ~/.config/inshellisense/rc.toml with the
+//   6. link bin/termauto onto PATH as `termauto`
+//   7. regenerate the shell init scripts so they invoke `termauto`, and retire
+//      any leftover `is` link from before the rename
+//   8. write (or tell you how to merge) ~/.config/inshellisense/rc.toml with the
 //      absolute specs path for THIS machine
 import { execFileSync as run } from "node:child_process";
 import fs from "node:fs";
@@ -23,6 +26,9 @@ const VENDOR = path.join(ROOT, "vendor", "inshellisense");
 const PATCHES = path.join(ROOT, "patches");
 const SPECS_BUILD = path.join(ROOT, "specs", "build");
 
+/** The command name we install. Also baked into the generated shell init scripts. */
+const CMD = "termauto";
+
 const UPSTREAM = "https://github.com/microsoft/inshellisense";
 // Pinned so a rebuild months from now produces the same engine our patches were
 // written against. Bump deliberately via `npm run upstream`, never incidentally.
@@ -30,7 +36,7 @@ const PINNED_COMMIT = "6bd0ae7";
 
 const sh = (cmd, args, opts = {}) => run(cmd, args, { stdio: "inherit", encoding: "utf8", ...opts });
 
-const TOTAL_STEPS = 7;
+const TOTAL_STEPS = 8;
 const step = (n, msg) => console.log(`\n\x1b[1m[${n}/${TOTAL_STEPS}] ${msg}\x1b[0m`);
 const ok = (msg) => console.log(`  \x1b[32m✓\x1b[0m ${msg}`);
 const warn = (msg) => console.log(`  \x1b[33m!\x1b[0m ${msg}`);
@@ -120,18 +126,19 @@ step(4, "Unpacking the bundled spec corpus");
 step(5, "Compiling termauto specs");
 sh("npm", ["run", "build:specs"], { cwd: ROOT });
 
-// ── 6. `is` on PATH ───────────────────────────────────────────────────────────
-step(6, "Linking the `is` launcher onto PATH");
+// ── 6. `termauto` on PATH ─────────────────────────────────────────────────────
+step(6, `Linking the \`${CMD}\` launcher onto PATH`);
+let linkedOnPath = false;
 {
-  // The generated shell-init script invokes the engine by the BARE NAME `is`
-  // (`is -s zsh ; exit`). Without that name resolvable, auto-start fails in every
-  // new shell — the dropdown just never appears, with no obvious cause. So the
-  // launcher has to be reachable as `is`, not only as ./bin/termauto.
-  const launcher = path.join(ROOT, "bin", "termauto");
+  // The generated shell-init script invokes the engine by BARE NAME
+  // (`termauto -s zsh ; exit`). Without that name resolvable, auto-start fails in
+  // every new shell — the dropdown just never appears, with no obvious cause. So
+  // the launcher has to be reachable as `termauto`, not only as ./bin/termauto.
+  const launcher = path.join(ROOT, "bin", CMD);
   fs.chmodSync(launcher, 0o755);
 
   if (process.platform === "win32") {
-    warn("skipping symlink on Windows — ensure bin/termauto is reachable as `is` on PATH yourself");
+    warn(`skipping symlink on Windows — ensure bin/${CMD} is reachable as \`${CMD}\` on PATH yourself`);
   } else {
     const pathDirs = (process.env.PATH ?? "").split(path.delimiter);
     const preferred = [path.join(os.homedir(), ".local", "bin"), path.join(os.homedir(), "bin"), "/usr/local/bin"];
@@ -157,8 +164,8 @@ step(6, "Linking the `is` launcher onto PATH");
 
     const manual = () => {
       console.log(`\n      Link it yourself into a directory on your PATH, then re-run:`);
-      console.log(`        ln -sf "${launcher}" <dir-on-PATH>/is\n`);
-      console.log(`      Auto-start (npm run shell-init) needs \`is\` resolvable; a plain`);
+      console.log(`        ln -sf "${launcher}" <dir-on-PATH>/${CMD}\n`);
+      console.log(`      Auto-start (npm run shell-init) needs \`${CMD}\` resolvable; a plain`);
       console.log(`      \`${launcher}\` session works without it.\n`);
     };
 
@@ -171,7 +178,7 @@ step(6, "Linking the `is` launcher onto PATH");
       );
       manual();
     } else {
-      const link = path.join(target, "is");
+      const link = path.join(target, CMD);
       try {
         const present = fs.lstatSync(link, { throwIfNoEntry: false }) != null;
         let ours = false;
@@ -183,14 +190,15 @@ step(6, "Linking the `is` launcher onto PATH");
           }
         }
         if (present && !ours) {
-          // Never silently replace an unrelated binary called `is`.
+          // Never silently replace an unrelated binary of the same name.
           warn(`${link} already exists and isn't ours — leaving it alone.`);
           console.log(`        Point it at ${launcher} yourself if auto-start doesn't fire.`);
         } else {
           fs.mkdirSync(target, { recursive: true });
           fs.rmSync(link, { force: true });
           fs.symlinkSync(launcher, link);
-          ok(`${link} -> bin/termauto`);
+          linkedOnPath = true;
+          ok(`${link} -> bin/${CMD}`);
         }
       } catch (e) {
         // Not fatal: everything else still works, only auto-start needs this.
@@ -201,8 +209,49 @@ step(6, "Linking the `is` launcher onto PATH");
   }
 }
 
+// ── 7. Shell init scripts ─────────────────────────────────────────────────────
+step(7, "Regenerating the shell init scripts");
+{
+  // These live in ~/.inshellisense/init/<shell>/ and re-exec the engine by bare
+  // name. The name is baked in at generation time, so a rename is only real once
+  // they are rewritten — otherwise every new shell still calls the old one and
+  // auto-start dies silently. ISTERM_LAUNCHER is what getShellConfig reads.
+  try {
+    sh(
+      "node",
+      ["--input-type=module", "-e", 'import { createShellConfigs } from "./build/utils/shell.js"; await createShellConfigs();'],
+      { cwd: VENDOR, env: { ...process.env, ISTERM_LAUNCHER: CMD } },
+    );
+    const zshInit = path.join(os.homedir(), ".inshellisense", "init", "zsh", "init.zsh");
+    if (fs.existsSync(zshInit) && !fs.readFileSync(zshInit, "utf-8").includes(`${CMD} -s zsh`)) {
+      warn(`${zshInit} does not invoke \`${CMD}\` — auto-start may not fire`);
+    } else {
+      ok(`init scripts invoke \`${CMD}\``);
+    }
+  } catch (e) {
+    warn(`could not regenerate init scripts: ${e.message}`);
+  }
+
+  // Retire the pre-rename `is` link, but only once its replacement is in place
+  // and only if it is ours — an unrelated `is` binary must survive untouched.
+  if (linkedOnPath && process.platform !== "win32") {
+    const launcher = path.join(ROOT, "bin", CMD);
+    for (const dir of [path.join(os.homedir(), ".local", "bin"), path.join(os.homedir(), "bin"), "/usr/local/bin"]) {
+      const legacy = path.join(dir, "is");
+      try {
+        if (!fs.lstatSync(legacy, { throwIfNoEntry: false })?.isSymbolicLink()) continue;
+        if (fs.realpathSync(legacy) !== fs.realpathSync(launcher)) continue;
+        fs.rmSync(legacy);
+        ok(`removed the old \`is\` link at ${legacy}`);
+      } catch {
+        continue; // dangling, unreadable or not ours — leave it alone
+      }
+    }
+  }
+}
+
 // ── 7. Config ─────────────────────────────────────────────────────────────────
-step(7, "Configuring specs path");
+step(8, "Configuring specs path");
 {
   // Upstream reads ~/.inshellisenserc first, then ~/.config/inshellisense/rc.toml.
   const xdg = path.join(os.homedir(), ".config", "inshellisense", "rc.toml");
@@ -246,8 +295,9 @@ path = ["${SPECS_BUILD}"]
 }
 
 console.log(`\n\x1b[1mDone.\x1b[0m Start a session:\n`);
-console.log(`  ${path.join(ROOT, "bin", "termauto")}\n`);
+console.log(`  ${linkedOnPath ? CMD : path.join(ROOT, "bin", CMD)}\n`);
 console.log(`Then type \`git ch\` or \`yarn \` and the dropdown should appear.`);
-console.log(`To start it automatically, append this to ~/.zshrc — it MUST be the last thing`);
-console.log(`in the file, and run \`npm run shell-init\` to add it safely:\n`);
+console.log(`To start it automatically in every new shell, run:\n`);
 console.log(`  npm run shell-init\n`);
+console.log(`It appends a guarded hook to ~/.zshrc — which must stay the LAST thing in`);
+console.log(`the file — after backing the file up and syntax-checking the result.\n`);

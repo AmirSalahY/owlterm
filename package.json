@@ -4,6 +4,18 @@
   "private": true,
   "type": "module",
   "description": "IDE-style terminal autocomplete for JS/RN/iOS/Android stacks, built on a fork of microsoft/inshellisense",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AmirSalahY/termauto.git"
+  },
+  "homepage": "https://github.com/AmirSalahY/termauto#readme",
+  "bin": {
+    "termauto": "bin/termauto"
+  },
+  "engines": {
+    "node": ">=18.0 <23.0.0"
+  },
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "build:specs": "tsc -p specs/tsconfig.json && node specs/build-index.mjs",

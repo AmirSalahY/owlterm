@@ -15,6 +15,9 @@ import path from "node:path";
 
 const MARKER = "termauto (inshellisense)";
 
+/** The command name the generated init script re-execs. Must match setup.mjs. */
+const CMD = "termauto";
+
 const SHELLS = {
   zsh: {
     rc: path.join(os.homedir(), ".zshrc"),
@@ -58,17 +61,18 @@ const shell = SHELLS[shellName];
 
 if (!shell) {
   console.error(`unsupported shell '${shellName}' — supported: ${Object.keys(SHELLS).join(", ")}`);
-  console.error(`For fish/pwsh/nu, use: ./bin/termauto init <shell>  (and place it LAST in the rc file)`);
+  console.error(`For fish/pwsh/nu, use: ${CMD} init <shell>  (and place it LAST in the rc file)`);
   process.exit(1);
 }
 
-// The hook invokes the engine by the bare name `is`; without that on PATH nothing
-// starts and there is no visible error. Fail loudly rather than write a dead hook.
+// The generated init script invokes the engine by the bare name `termauto`;
+// without that on PATH nothing starts and there is no visible error. Fail loudly
+// rather than write a dead hook.
 try {
-  execFileSync("sh", ["-c", "command -v is"], { stdio: "pipe" });
+  execFileSync("sh", ["-c", `command -v ${CMD}`], { stdio: "pipe" });
 } catch {
-  console.error(`✗ \`is\` is not on your PATH, so the hook would never start.`);
-  console.error(`  Run \`npm run setup\` (it links bin/termauto as \`is\`) and try again.`);
+  console.error(`✗ \`${CMD}\` is not on your PATH, so the hook would never start.`);
+  console.error(`  Run \`npm run setup\` (it links bin/${CMD} onto PATH) and try again.`);
   process.exit(1);
 }
 

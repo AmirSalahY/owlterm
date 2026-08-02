@@ -1,0 +1,55 @@
+From 5e48e937d0008c429a4b2a6839ea7cc3b7354ad7 Mon Sep 17 00:00:00 2001
+From: Amir <hello@noury.ch>
+Date: Sat, 1 Aug 2026 16:53:26 +0300
+Subject: [PATCH 01/13] fix(complete): load config so local specs resolve
+
+The complete command called initializeRuntime() but never loadConfig(), so
+getConfig().specs.path stayed at its default [] and loadLocalSpecsSet() loaded
+nothing. This made `is complete` silently disagree with a real session, which
+is the opposite of what a debugging command should do. root.ts and specs/list.ts
+both already load the config.
+
+Also guard the stdout write: getSuggestions() returns undefined when nothing
+matches, and JSON.stringify(undefined) is undefined, which threw
+ERR_INVALID_ARG_TYPE instead of reporting no completions.
+
+---
+ src/commands/complete.ts | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/src/commands/complete.ts b/src/commands/complete.ts
+index a23b05c..388f6a9 100644
+--- a/src/commands/complete.ts
++++ b/src/commands/complete.ts
+@@ -5,18 +5,25 @@ import os from "node:os";
+ import { Command } from "commander";
+ import { Shell } from "../utils/shell.js";
+ import { initializeRuntime } from "../runtime/initialize.js";
++import { loadConfig } from "../utils/config.js";
+ 
+-const action = async (input: string) => {
++const action = (program: Command) => async (input: string) => {
++  // Without this, getConfig().specs.path stays at its default [] and
++  // loadLocalSpecsSet() silently loads nothing — so `complete` disagreed with a
++  // real session, which is exactly what you don't want from a debugging command.
++  await loadConfig(program);
+   const shell = os.platform() === "win32" ? Shell.Cmd : Shell.Bash;
+   const { getSuggestions } = await initializeRuntime(shell);
+   const suggestions = await getSuggestions(input, process.cwd(), shell);
+-  process.stdout.write(JSON.stringify(suggestions));
++  // getSuggestions returns undefined when nothing matches; JSON.stringify(undefined)
++  // is undefined, which makes stdout.write throw ERR_INVALID_ARG_TYPE.
++  process.stdout.write(JSON.stringify(suggestions ?? null));
+   process.exit(0);
+ };
+ 
+ const cmd = new Command("complete");
+ cmd.description(`generates a completion for the provided input`);
+ cmd.argument("<input>");
+-cmd.action(action);
++cmd.action(action(cmd));
+ 
+ export default cmd;
+-- 
+2.51.0
+

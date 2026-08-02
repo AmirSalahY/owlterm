@@ -1,0 +1,338 @@
+From fe2eb447aff92dfbfbfdd3f25a888c221ce85885 Mon Sep 17 00:00:00 2001
+From: Amir <hello@noury.ch>
+Date: Sat, 1 Aug 2026 17:48:49 +0300
+Subject: [PATCH 03/13] feat(ui): accept on Enter/Right, and actually style the
+ dropdown
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Accepting a suggestion required Tab; Enter always submitted and Right always
+moved the cursor, which made the dropdown feel unresponsive.
+
+- Enter and Right arrow now accept too, via a single #isAcceptKey/#pendingAcceptance
+  pair so tab/enter/right cannot diverge. Both are config-gated (acceptOnEnter,
+  acceptOnRightArrow, default true).
+- Right arrow only accepts with the cursor at end of line (cursorTerminated);
+  mid-line it must keep moving the cursor or the line becomes uneditable.
+- Enter must not clear the command when it is going to accept, or it would wipe
+  the very line the acceptance edits — so the acceptance is resolved BEFORE the
+  existing clearCommand() on return.
+- An exact match needs no second Enter: calculateReplacement() already returns
+  undefined when only a trailing space would be inserted, so the key falls
+  through and submits.
+
+Styling, now a [theme] table (border, activeBackground, activeForeground,
+description, pointer):
+- borders are coloured — renderBox always accepted a borderColor but no caller
+  ever passed one.
+- selected row gets a pointer in a fixed-width gutter present on every row, so
+  the text does not shift as the selection moves, plus bold + accent background
+  spanning the full row.
+- description panel text is dimmed so the list stays dominant.
+
+Fixes a latent bug this exposed: renderBox did
+`chalk.hex(borderColor).apply(text)`, which calls Function.prototype.apply with
+text as thisArg and NO arguments, so chalk returned an empty string and every
+border character vanished. Dormant only because borderColor was never passed.
+Verified display width is a uniform 40 cells for both emoji and 1-wide icons.
+
+---
+ src/runtime/suggestion.ts   |  20 +---------
+ src/ui/suggestionManager.ts |  75 +++++++++++++++++++++++++++---------
+ src/ui/utils.ts             |   5 ++-
+ src/utils/config.ts         |  56 +++++++++++++++++++++++++++
+ src/utils/frecency.ts       | Bin 6791 -> 6765 bytes
+ 5 files changed, 119 insertions(+), 37 deletions(-)
+
+diff --git a/src/runtime/suggestion.ts b/src/runtime/suggestion.ts
+index 6fd8663..5f3701b 100644
+--- a/src/runtime/suggestion.ts
++++ b/src/runtime/suggestion.ts
+@@ -387,15 +387,7 @@ export const getSubcommandDrivenRecommendation = async (
+       removeEmptySuggestion(
+         removeHiddenSuggestions(
+           removeHomeDirectorySuggestion(
+-            removeAcceptedSuggestions(
+-              adjustPathSuggestions(
+-                rankSuggestions(suggestions, acceptedTokens, cwd),
+-                partialToken,
+-                lastToken,
+-                shell,
+-              ),
+-              acceptedTokens,
+-            ),
++            removeAcceptedSuggestions(adjustPathSuggestions(rankSuggestions(suggestions, acceptedTokens, cwd), partialToken, lastToken, shell), acceptedTokens),
+             allTokens,
+           ),
+           partialToken,
+@@ -442,15 +434,7 @@ export const getArgDrivenRecommendation = async (
+       removeEmptySuggestion(
+         removeHiddenSuggestions(
+           removeHomeDirectorySuggestion(
+-            removeAcceptedSuggestions(
+-              adjustPathSuggestions(
+-                rankSuggestions(suggestions, acceptedTokens, cwd),
+-                partialToken,
+-                lastToken,
+-                shell,
+-              ),
+-              acceptedTokens,
+-            ),
++            removeAcceptedSuggestions(adjustPathSuggestions(rankSuggestions(suggestions, acceptedTokens, cwd), partialToken, lastToken, shell), acceptedTokens),
+             allTokens,
+           ),
+           partialToken,
+diff --git a/src/ui/suggestionManager.ts b/src/ui/suggestionManager.ts
+index 2a37f57..6969cdf 100644
+--- a/src/ui/suggestionManager.ts
++++ b/src/ui/suggestionManager.ts
+@@ -8,7 +8,7 @@ import chalk from "chalk";
+ import { Shell } from "../utils/shell.js";
+ import log from "../utils/log.js";
+ import { getConfig } from "../utils/config.js";
+-import { calculateReplacement, applyReplacement } from "../runtime/replacement.js";
++import { calculateReplacement, applyReplacement, type ReplacementAction } from "../runtime/replacement.js";
+ import { getCommandCacheKey } from "../runtime/parser.js";
+ import { initializeRuntime } from "../runtime/initialize.js";
+ 
+@@ -20,7 +20,6 @@ const suggestionWidth = 40;
+ const descriptionWidth = 30;
+ const descriptionHeight = 5;
+ const borderWidth = 2;
+-const activeSuggestionBackgroundColor = "#7D56F4";
+ export const getMaxLines = () => borderWidth + Math.max(getMaxSuggestions(), descriptionHeight) + 1; // accounts when there is a unhandled newline at the end of the command
+ export const MIN_WIDTH = borderWidth + descriptionWidth;
+ 
+@@ -141,17 +140,28 @@ export class SuggestionManager {
+ 
+   private _renderDescription(description: string | undefined) {
+     if (!description) return "";
+-    return renderBox(truncateMultilineText(description, descriptionWidth - borderWidth, descriptionHeight), descriptionWidth);
++    const { description: descriptionColor, border } = getConfig().theme;
++    return renderBox(
++      truncateMultilineText(description, descriptionWidth - borderWidth, descriptionHeight).map((line) => chalk.hex(descriptionColor)(line)),
++      descriptionWidth,
++      border,
++    );
+   }
+ 
+   private _renderSuggestions(suggestions: Suggestion[], activeSuggestionIdx: number) {
++    const { activeBackground, activeForeground, border, pointer } = getConfig().theme;
+     return renderBox(
+       suggestions.map((suggestion, idx) => {
+-        const suggestionText = `${suggestion.icon} ${suggestion.name}`;
+-        const truncatedSuggestion = truncateText(suggestionText, suggestionWidth - 2);
+-        return idx == activeSuggestionIdx ? chalk.bgHex(activeSuggestionBackgroundColor)(truncatedSuggestion) : truncatedSuggestion;
++        const active = idx == activeSuggestionIdx;
++        // A fixed-width gutter on EVERY row, not just the active one — otherwise the
++        // pointer shifts the text sideways as the selection moves. truncateText pads
++        // to width, so the highlight spans the full row.
++        const gutter = active ? `${pointer} ` : "  ";
++        const truncatedSuggestion = truncateText(`${gutter}${suggestion.icon} ${suggestion.name}`, suggestionWidth - borderWidth);
++        return active ? chalk.bgHex(activeBackground).hex(activeForeground).bold(truncatedSuggestion) : truncatedSuggestion;
+       }),
+       suggestionWidth,
++      border,
+     );
+   }
+ 
+@@ -220,9 +230,44 @@ export class SuggestionManager {
+     return ui;
+   }
+ 
++  /**
++   * The replacement an accept key would apply right now, or undefined if there is
++   * nothing to accept.
++   *
++   * calculateReplacement() already returns undefined when the token is fully typed
++   * (only a trailing space would be inserted), which is what makes Enter fall
++   * through and submit on an exact match instead of demanding a second press.
++   */
++  #pendingAcceptance(): ReplacementAction | undefined {
++    if (!this.#suggestBlob || this.#suggestBlob.suggestions.length == 0) return undefined;
++    const suggestion = this.#suggestBlob.suggestions.at(this.#activeSuggestionIdx);
++    if (suggestion == null) return undefined;
++    return calculateReplacement(this.#suggestBlob.activeToken, suggestion);
++  }
++
++  #isAcceptKey(name: string, shift: boolean, ctrl: boolean): boolean {
++    const config = getConfig();
++    const { key, shift: acceptShift, control: acceptCtrl } = config.bindings.acceptSuggestion;
++    if (name == key && shift == !!acceptShift && ctrl == !!acceptCtrl) return true;
++    if (shift || ctrl) return false;
++    if (config.acceptOnEnter && name == "return") return true;
++    if (config.acceptOnRightArrow && name == "right") {
++      // Only at end of line. Mid-line, right arrow must keep moving the cursor —
++      // hijacking it there would make the line uneditable.
++      return this.#term.getCommandState().cursorTerminated === true;
++    }
++    return false;
++  }
++
+   update(keyPress: KeyPress, allowBindings = true): boolean {
+     const { name, shift, ctrl } = keyPress;
+-    if (name == "return") {
++
++    // Resolved up front because Enter is now overloaded: when it is going to accept
++    // a suggestion it must NOT clear the command, or it would wipe the very line the
++    // acceptance is about to edit.
++    const acceptance = allowBindings && this.#isAcceptKey(name, shift, ctrl) ? this.#pendingAcceptance() : undefined;
++
++    if (name == "return" && acceptance == null) {
+       this.#term.clearCommand(); // clear the current command on enter
+     }
+ 
+@@ -236,7 +281,6 @@ export class SuggestionManager {
+     }
+     const {
+       dismissSuggestions: { key: dismissKey, shift: dismissShift, control: dismissCtrl },
+-      acceptSuggestion: { key: acceptKey, shift: acceptShift, control: acceptCtrl },
+       nextSuggestion: { key: nextKey, shift: nextShift, control: nextCtrl },
+       previousSuggestion: { key: prevKey, shift: prevShift, control: prevCtrl },
+     } = getConfig().bindings;
+@@ -248,16 +292,11 @@ export class SuggestionManager {
+       this.#activeSuggestionIdx = Math.max(0, this.#activeSuggestionIdx - 1);
+     } else if (name == nextKey && shift == !!nextShift && ctrl == !!nextCtrl) {
+       this.#activeSuggestionIdx = Math.min(this.#activeSuggestionIdx + 1, (this.#suggestBlob?.suggestions.length ?? 1) - 1);
+-    } else if (name == acceptKey && shift == !!acceptShift && ctrl == !!acceptCtrl) {
+-      const suggestion = this.#suggestBlob?.suggestions.at(this.#activeSuggestionIdx);
+-      if (suggestion == null || this.#suggestBlob?.suggestions.length == 0) {
+-        return false;
+-      }
+-      const action = calculateReplacement(this.#suggestBlob?.activeToken, suggestion);
+-      if (action == null) {
+-        return false;
+-      }
+-      this.#term.write(applyReplacement(action));
++    } else if (acceptance != null) {
++      // Covers tab, Enter and right arrow alike — see #isAcceptKey. When there is
++      // nothing to accept, acceptance is undefined and the key falls through to the
++      // shell, so Enter still submits and right arrow still moves the cursor.
++      this.#term.write(applyReplacement(acceptance));
+     } else if (name == "return" || (name == "c" && ctrl)) {
+       this.#term.clearCommand();
+       return false;
+diff --git a/src/ui/utils.ts b/src/ui/utils.ts
+index 81a479d..4f4c9d7 100644
+--- a/src/ui/utils.ts
++++ b/src/ui/utils.ts
+@@ -8,7 +8,10 @@ import { wcswidth } from "../utils/unicode.js";
+ 
+ export const renderBox = (rows: string[], width: number, borderColor?: string): string[] => {
+   const result = [];
+-  const setColor = (text: string) => resetColor + (borderColor ? chalk.hex(borderColor).apply(text) : text);
++  // NB: `chalk.hex(borderColor).apply(text)` would invoke Function.prototype.apply
++  // with `text` as thisArg and NO arguments, so chalk returns an empty string and
++  // every border character disappears. Call the builder directly.
++  const setColor = (text: string) => resetColor + (borderColor ? chalk.hex(borderColor)(text) : text);
+   result.push(setColor("┌" + "─".repeat(width - 2) + "┐"));
+   rows.forEach((row) => {
+     result.push(setColor("│") + row + setColor("│"));
+diff --git a/src/utils/config.ts b/src/utils/config.ts
+index 87c7901..e3d1e75 100644
+--- a/src/utils/config.ts
++++ b/src/utils/config.ts
+@@ -19,6 +19,17 @@ type Binding = {
+   key: string;
+ };
+ 
++type Theme = {
++  /** Box-drawing border colour. The engine always supported this but never set it. */
++  border: string;
++  activeBackground: string;
++  activeForeground: string;
++  /** Description panel text — dimmed so the suggestion list stays dominant. */
++  description: string;
++  /** Marker in the selected row's gutter. Must be 1 cell wide to keep alignment. */
++  pointer: string;
++};
++
+ type Config = {
+   bindings: {
+     nextSuggestion: Binding;
+@@ -26,6 +37,11 @@ type Config = {
+     dismissSuggestions: Binding;
+     acceptSuggestion: Binding;
+   };
++  /** Enter accepts the highlighted suggestion instead of submitting the command. */
++  acceptOnEnter: boolean;
++  /** Right arrow accepts, but only with the cursor at end of line. */
++  acceptOnRightArrow: boolean;
++  theme: Theme;
+   specs: {
+     path: string[];
+   };
+@@ -94,6 +110,27 @@ const configSchema = {
+       nullable: true,
+       default: true,
+     },
++    acceptOnEnter: {
++      type: "boolean",
++      nullable: true,
++      default: true,
++    },
++    acceptOnRightArrow: {
++      type: "boolean",
++      nullable: true,
++      default: true,
++    },
++    theme: {
++      type: "object",
++      nullable: true,
++      properties: {
++        border: { type: "string", nullable: true },
++        activeBackground: { type: "string", nullable: true },
++        activeForeground: { type: "string", nullable: true },
++        description: { type: "string", nullable: true },
++        pointer: { type: "string", nullable: true },
++      },
++    },
+   },
+   additionalProperties: false,
+ };
+@@ -118,6 +155,15 @@ let globalConfig: Config = {
+   useAliases: false,
+   useNerdFont: false,
+   useFrecency: true,
++  acceptOnEnter: true,
++  acceptOnRightArrow: true,
++  theme: {
++    border: "#7D56F4",
++    activeBackground: "#7D56F4",
++    activeForeground: "#FFFFFF",
++    description: "#9CA3AF",
++    pointer: "▸",
++  },
+ };
+ 
+ export const getConfig = (): Config => globalConfig;
+@@ -149,6 +195,16 @@ export const loadConfig = async (program: Command) => {
+         useNerdFont: config?.useNerdFont ?? false,
+         maxSuggestions: config?.maxSuggestions ?? 5,
+         useFrecency: config?.useFrecency ?? true,
++        acceptOnEnter: config?.acceptOnEnter ?? true,
++        acceptOnRightArrow: config?.acceptOnRightArrow ?? true,
++        // Per-key fallback so overriding one colour doesn't blank the rest.
++        theme: {
++          border: config?.theme?.border ?? globalConfig.theme.border,
++          activeBackground: config?.theme?.activeBackground ?? globalConfig.theme.activeBackground,
++          activeForeground: config?.theme?.activeForeground ?? globalConfig.theme.activeForeground,
++          description: config?.theme?.description ?? globalConfig.theme.description,
++          pointer: config?.theme?.pointer ?? globalConfig.theme.pointer,
++        },
+       };
+     }
+   }
+diff --git a/src/utils/frecency.ts b/src/utils/frecency.ts
+index 4ed3d9d1a7c530d31d5f7b6458817c9e93009578..37ff4d3330bb5caa76c20ba391fd5fbd18bb2b82 100644
+GIT binary patch
+delta 12
+TcmZoSeQUDe8`EY1=5lcWB+vxf
+
+delta 29
+kcmaEB(r&up8<T)ST2X$kf>K_7N~%>_v6A)XH%yJ<0IcW=`v3p{
+
+-- 
+2.51.0
+

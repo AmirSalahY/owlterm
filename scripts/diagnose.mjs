@@ -7,6 +7,10 @@ import os from "node:os";
 import path from "node:path";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+
+/** The command name the generated init script re-execs. Must match setup.mjs. */
+const CMD = "termauto";
+
 const ok = (m) => console.log(`  \x1b[32m✓\x1b[0m ${m}`);
 const bad = (m) => console.log(`  \x1b[31m✗\x1b[0m ${m}`);
 const info = (m) => console.log(`  \x1b[33m·\x1b[0m ${m}`);
@@ -29,15 +33,26 @@ info(`TERM=${process.env.TERM ?? "(unset)"}  TERM_PROGRAM=${process.env.TERM_PRO
 if (process.env.VSCODE_RESOLVING_ENVIRONMENT) info("VSCODE_RESOLVING_ENVIRONMENT set — the hook intentionally skips this pass");
 if (process.env.TERM === "dumb") bad("TERM=dumb — no dropdown is possible");
 
-// 3. The hook invokes the engine by the bare name `is`.
-console.log("\n[3] `is` resolvable on PATH");
+// 3. The hook invokes the engine by the bare name `termauto`.
+console.log(`\n[3] \`${CMD}\` resolvable on PATH`);
 try {
-  const p = execFileSync("sh", ["-c", "command -v is"], { encoding: "utf8" }).trim();
+  const p = execFileSync("sh", ["-c", `command -v ${CMD}`], { encoding: "utf8" }).trim();
   const target = fs.realpathSync(p);
-  const expected = fs.realpathSync(path.join(ROOT, "bin", "termauto"));
+  const expected = fs.realpathSync(path.join(ROOT, "bin", CMD));
   target === expected ? ok(`${p} -> ${target}`) : bad(`${p} resolves to ${target}, expected ${expected}`);
 } catch {
-  bad("`is` not found on PATH — the hook can never start. Run: npm run setup");
+  bad(`\`${CMD}\` not found on PATH — the hook can never start. Run: npm run setup`);
+}
+
+// 3b. The generated init script bakes the launcher name in at generation time, so
+// a stale one from before the rename still calls `is` and silently does nothing.
+{
+  const initScript = path.join(os.homedir(), ".inshellisense", "init", "zsh", "init.zsh");
+  if (fs.existsSync(initScript)) {
+    const body = fs.readFileSync(initScript, "utf8");
+    if (body.includes(`${CMD} -s zsh`)) ok(`init.zsh invokes \`${CMD}\``);
+    else bad(`init.zsh still invokes \`${body.trim().match(/^\s*(\S+) -s zsh/m)?.[1] ?? "?"}\` — run: npm run setup`);
+  }
 }
 
 // 4. Hook present in the rc file, and last.

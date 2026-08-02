@@ -1,0 +1,186 @@
+From fb9dfb227544d3da6498a2fb011078830f4510a3 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <hello@noury.ch>
+Date: Sun, 2 Aug 2026 16:40:54 +0300
+Subject: [PATCH 12/13] fix(frecency): match path suggestions against their own
+ history
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Folder and file suggestions reach the ranker as "src/" — the trailing separator
+is stripped later, by adjustPathSuggestions — while history records what was
+typed, "cd src". The keys therefore never matched, so usage ranking was dead for
+every path suggestion regardless of sortMethod. Reported as "cd" listing
+directories alphabetically despite `cd nrp` being the most recent command.
+
+Keys are now normalised on both sides, so "cd src/" and "cd src" are one entry.
+
+Also stops the suite writing to the developer's own ~/.inshellisense. Frecency
+writes are fire-and-forget, so the previous save-and-restore lost the race — an
+append could land after the restore, leaving real history polluted or, if a run
+was interrupted, gone. constants.ts now honours ISTERM_RESOURCES_DIR and the
+tests point it at a scratch directory.
+
+---
+ .gitignore                 |   4 +++-
+ jest.config.cjs            |   7 ++++++
+ src/tests/ordering.test.ts |  47 +++++++++++++++++++++++--------------
+ src/utils/constants.ts     |  28 ++++++++++++++++------
+ src/utils/frecency.ts      | Bin 10026 -> 10783 bytes
+ 5 files changed, 61 insertions(+), 25 deletions(-)
+
+diff --git a/.gitignore b/.gitignore
+index 4e3c5ad..cb1a95f 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -5,4 +5,6 @@ t*.md
+ tui-traces/
+ .idea/
+ .vscode/
+-pkg/
+\ No newline at end of file
++pkg/
++# scratch runtime data for the test suite (see jest.config.cjs)
++.test-resources/
+diff --git a/jest.config.cjs b/jest.config.cjs
+index 1dd9820..44e51cd 100644
+--- a/jest.config.cjs
++++ b/jest.config.cjs
+@@ -7,6 +7,13 @@
+ // Inherited by the worker processes.
+ process.env.IS_ICONS ??= "unicode";
+ 
++// Runtime data (frecency history, unpacked specs) goes to a scratch directory,
++// never the developer's own ~/.inshellisense. Frecency writes are fire-and-forget,
++// so a save-and-restore around each test still loses the race: an append can land
++// after the restore. Set here because constants.ts reads it at import time.
++const path = require("node:path");
++process.env.ISTERM_RESOURCES_DIR ??= path.join(__dirname, ".test-resources");
++
+ /** @type {import('ts-jest').JestConfigWithTsJest} */
+ module.exports = {
+   // [...]
+diff --git a/src/tests/ordering.test.ts b/src/tests/ordering.test.ts
+index 98f165b..a701cf8 100644
+--- a/src/tests/ordering.test.ts
++++ b/src/tests/ordering.test.ts
+@@ -13,23 +13,8 @@ import { Shell } from "../utils/shell.js";
+ 
+ const frecencyPath = path.join(allResourcesPath, "frecency.jsonl");
+ 
+-// These write to the real ~/.inshellisense/frecency.jsonl, so preserve whatever
+-// is there — the developer running the suite is very likely also a user.
+-let saved: string | undefined;
+-
+-beforeAll(() => {
+-  try {
+-    saved = fs.readFileSync(frecencyPath, "utf-8");
+-  } catch {
+-    saved = undefined;
+-  }
+-});
+-
+-afterAll(() => {
+-  if (saved != null) fs.writeFileSync(frecencyPath, saved);
+-  else fs.rmSync(frecencyPath, { force: true });
+-});
+-
++// allResourcesPath points at a scratch dir here (see jest.config.cjs), so these
++// never touch the developer's own history.
+ beforeEach(async () => {
+   fs.rmSync(frecencyPath, { force: true });
+   await loadFrecency(true);
+@@ -175,6 +160,34 @@ describe("lastUsed ordering", () => {
+   });
+ });
+ 
++describe("path suggestions carry a trailing separator", () => {
++  // Regression guard. Folder suggestions reach the ranker as "src/" — the
++  // separator is only stripped afterwards, by adjustPathSuggestions — while
++  // history records what was typed, "cd src". Without normalising the two never
++  // matched, so usage ranking was dead for every path suggestion even though the
++  // history was there. Directly reported as "it's not showing the last used first".
++  it("matches history recorded without the separator", () => {
++    recordCommand("cd project", "/repo");
++    expect(lastUsedAt(["cd"], "project/", "/repo")).toBeGreaterThan(0);
++    expect(lastUsedAt(["cd"], "project/", "/repo")).toEqual(lastUsedAt(["cd"], "project", "/repo"));
++  });
++
++  it("records a typed separator under the same key", () => {
++    recordCommand("cd project/", "/repo");
++    expect(lastUsedAt(["cd"], "project", "/repo")).toBeGreaterThan(0);
++  });
++
++  it("boosts a path suggestion under frecency too", () => {
++    recordCommand("cd project", "/repo");
++    expect(rankingBoost(["cd"], "project/", "/repo")).toBeGreaterThan(0);
++  });
++
++  it("leaves a bare separator alone rather than emptying the key", () => {
++    recordCommand("cd /", "/repo");
++    expect(lastUsedAt(["cd"], "/", "/repo")).toBeGreaterThan(0);
++  });
++});
++
+ describe("recency ordering (Amazon Q's model)", () => {
+   it("leaves an unused suggestion at its spec priority", () => {
+     expect(recencyPriority(["git"], "rebase", "/repo", 50)).toEqual(50);
+diff --git a/src/utils/constants.ts b/src/utils/constants.ts
+index b72369f..2b0e9ef 100644
+--- a/src/utils/constants.ts
++++ b/src/utils/constants.ts
+@@ -5,10 +5,24 @@ import path from "node:path";
+ import os from "node:os";
+ 
+ const inshellisenseFolderName = ".inshellisense";
+-export const allResourcesPath = path.join(os.homedir(), inshellisenseFolderName);
+-export const loggingResourcesPath = path.join(os.homedir(), inshellisenseFolderName, "log");
+-export const nativeResourcesPath = path.join(os.homedir(), inshellisenseFolderName, "native");
+-export const shellResourcesPath = path.join(os.homedir(), inshellisenseFolderName, "shell");
+-export const specResourcesPath = path.join(os.homedir(), inshellisenseFolderName, "spec");
+-export const initResourcesPath = path.join(os.homedir(), inshellisenseFolderName, "init");
+-export const versionResourcePath = path.join(os.homedir(), inshellisenseFolderName, "version.txt");
++
++/**
++ * Root for all runtime data. Overridable so tests can be given a scratch
++ * directory.
++ *
++ * os.homedir() reads the real environment through libuv, which jest's
++ * process.env copy cannot influence — so without an explicit hook, any test
++ * touching frecency history writes to the developer's own
++ * ~/.inshellisense/frecency.jsonl. Save-and-restore is not good enough either:
++ * frecency writes are fire-and-forget, so an append can land after the restore
++ * and leave real history polluted, or lost if the run is interrupted.
++ */
++const resourcesRoot = process.env.ISTERM_RESOURCES_DIR || path.join(os.homedir(), inshellisenseFolderName);
++
++export const allResourcesPath = resourcesRoot;
++export const loggingResourcesPath = path.join(resourcesRoot, "log");
++export const nativeResourcesPath = path.join(resourcesRoot, "native");
++export const shellResourcesPath = path.join(resourcesRoot, "shell");
++export const specResourcesPath = path.join(resourcesRoot, "spec");
++export const initResourcesPath = path.join(resourcesRoot, "init");
++export const versionResourcePath = path.join(resourcesRoot, "version.txt");
+diff --git a/src/utils/frecency.ts b/src/utils/frecency.ts
+index 3325daef92132a650e55316412553ccaf2fbc524..4afc02565c418082fa223460e58b532b0d9f9c88 100644
+GIT binary patch
+delta 893
+zcmaiyziSjh6vv4Q!5{&}AQqmFEskBeAI9=RA_sPg1PoZ1W^U(YcXE3(%gkHXm4g#|
+ztFyNi3lY{z8w-1DE&WS;vv;|q5U$(zX5RPvozL4(Pd^-e`LQ|Mf_w1Dnj8d>6)ICY
+zfm~1u4s&4z84J$vp;Q)Qt}2)aic@runi5~41w~K_2c=a+sCz8vH4ht&B1zDZGTMPf
+z5vM>Yf)#qqb379aXA@KCCt~FK0sMXQzBxa4Rt}8LDzE3rsys&tnIN<s7*!zTY2nBl
+zJ-guJRmxOl2&r;SU=D7q<b<hcqIx;1SgQlY%oQTbDhOf;!?P?w51uPZO+lcIorp|1
+z#?s*ePD~~_yIUE8XW$hVSR~`%(4}6v3oW5=B3ZoK<Mp&83dv%2*34H8@-uY9JkJ!r
+zlnjiF--MFrI(`j4rL!@!@~X><3yaJN0X5mm$0VTAc)9*o%<Nasc#V&-Iuw>*A3|O)
+z4Q35kokWA>2kaj#j(QpDgxwEd7uxM*54Ch2O&Iip2&PlcZK-$OJw6Vi2p%rlE>kgv
+z_dC$tjbPC9qP?wUqKO#$F!SzC_u57C`MXx@?nLC_lKd)i)H^jwhXDjp{cZEb)%wAW
+zx0m^5BNOHpPt>a;Ge*s*V#cE+|0wnEonIUE_Vqg(^~YP=mu~(~xc++k&y}@8b?f_j
+Ow|Ve$?WOs&{rMlxlQ}E^
+
+delta 131
+zcmbOqvdVA60rt(?xk5QNH%p2!Ze|tfWM+xh)6<(gS5cfRRxc|*GfzWFL22_^@$-zE
+fXG-xgZQd($g9WRSEsDFb>+MrLf>mO2q2@XO<De++
+
+-- 
+2.51.0
+

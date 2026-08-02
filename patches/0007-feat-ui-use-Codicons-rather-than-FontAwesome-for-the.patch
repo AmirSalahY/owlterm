@@ -1,0 +1,256 @@
+From 5833274fb0f42b190993ef6cc294c70b54a130b2 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <hello@noury.ch>
+Date: Sun, 2 Aug 2026 12:39:43 +0300
+Subject: [PATCH 07/13] feat(ui): use Codicons rather than FontAwesome for the
+ icon column
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Codicons are VS Code's own set — the same artwork IntelliSense uses for its
+completion list, which is this exact job. Mappings follow VS Code's semantics
+rather than picking shapes: symbol-parameter really is its icon for a parameter.
+
+theme.icons gains "codicon"; "nerd" stays as a deprecated alias. The rename
+reflects that the two names describe different layers — Codicons are the artwork,
+a Nerd Font is the container that gets them into a terminal, since a terminal
+renders characters and an icon therefore has to be one (U+EA60-EC1E, private use
+area). Verified all nine codepoints resolve in MesloLGS NF.
+
+is doctor also stops reporting on font detection when IS_ICONS forces a style,
+which bypasses detection entirely.
+
+---
+ src/runtime/icons.ts            | 60 ++++++++++++++++++++-------------
+ src/tests/runtime/icons.test.ts | 20 +++++++----
+ src/ui/ui-doctor.ts             |  8 ++++-
+ src/utils/config.ts             | 14 +++++---
+ 4 files changed, 66 insertions(+), 36 deletions(-)
+
+diff --git a/src/runtime/icons.ts b/src/runtime/icons.ts
+index 041b6f1..fb5eba0 100644
+--- a/src/runtime/icons.ts
++++ b/src/runtime/icons.ts
+@@ -13,26 +13,34 @@ type IconKey = "File" | "Folder" | "Subcommand" | "Option" | "Argument" | "Mixin
+ type IconSet = Record<IconKey, string>;
+ 
+ /**
+- * Nerd Font glyphs (FontAwesome + Codicons + Devicons, private use area). Every
+- * one is single-cell, so the icon column can't shove the labels sideways the way
+- * the emoji set did — emoji are double-width, and the ones with a variation
+- * selector (🏝️) are inconsistently measured across terminals.
++ * Codicons — VS Code's own icon set, the same artwork IntelliSense uses for its
++ * completion list, which is exactly the job here. Reached through a Nerd Font:
++ * Codicons live at U+EA60–U+EC1E in the private use area, and a patched font is
++ * the only way a terminal gets them, since a terminal renders text and nothing
++ * else.
++ *
++ * Semantics follow VS Code's own usage rather than picking pretty shapes —
++ * symbol-parameter really is its icon for a parameter.
++ *
++ * Every glyph is single-cell (enforced by a test), so the icon column can't shove
++ * labels sideways the way the emoji set did: emoji are double-width, and the ones
++ * carrying a variation selector are measured inconsistently across terminals.
+  */
+-const nerdIcons: IconSet = {
+-  File: "", // nf-fa-file
+-  Folder: "", // nf-fa-folder
+-  Subcommand: "", // nf-fa-cog
+-  Option: "", // nf-fa-wrench
+-  Argument: "", // nf-fa-sliders
+-  Mixin: "", // nf-fa-link
+-  Shortcut: "", // nf-fa-bolt
+-  Special: "", // nf-fa-star
+-  Default: "", // nf-fa-circle
++const codiconIcons: IconSet = {
++  File: "\uea7b", // cod-file
++  Folder: "\uea83", // cod-folder
++  Subcommand: "\uea8c", // cod-symbol-method — an invocable
++  Option: "\ueb65", // cod-symbol-property — a flag on the command
++  Argument: "\uea92", // cod-symbol-parameter
++  Mixin: "\ueb15", // cod-link — a mixin pulls in another spec
++  Shortcut: "\uea86", // cod-zap
++  Special: "\ueb59", // cod-star-full
++  Default: "\uea71", // cod-circle-filled
+ };
+ 
+ /**
+  * Geometric symbols that render in essentially any monospace font. The fallback
+- * when no Nerd Font is installed: monochrome and single-cell like the real icon
++ * when no Nerd Font is installed: monochrome and single-cell like the Codicon
+  * set, so the menu keeps its shape either way.
+  */
+ const unicodeIcons: IconSet = {
+@@ -64,23 +72,29 @@ const emojiIcons: IconSet = {
+ 
+ const noIcons: IconSet = { File: "", Folder: "", Subcommand: "", Option: "", Argument: "", Mixin: "", Shortcut: "", Special: "", Default: "" };
+ 
+-const ICON_STYLES = ["nerd", "unicode", "emoji", "none"] as const;
++const ICON_STYLES = ["codicon", "unicode", "emoji", "none"] as const;
++
++/** "nerd" named the delivery mechanism; "codicon" names the artwork. */
++const normalise = (style: string | undefined): Exclude<IconStyle, "auto"> | undefined => {
++  if (style === "nerd") return "codicon";
++  return (ICON_STYLES as readonly string[]).includes(style ?? "") ? (style as Exclude<IconStyle, "auto">) : undefined;
++};
+ 
+ export const resolveIconStyle = (): Exclude<IconStyle, "auto"> => {
+   // Env override wins over the rc file: it makes the choice deterministic for
+   // tests, and lets `IS_ICONS=emoji is` try a set without editing config.
+-  const override = process.env.IS_ICONS as Exclude<IconStyle, "auto"> | undefined;
+-  if (override && (ICON_STYLES as readonly string[]).includes(override)) return override;
++  const override = normalise(process.env.IS_ICONS);
++  if (override != null) return override;
+ 
+   const configured = getConfig().theme.icons;
+-  if (configured !== "auto") return configured;
+-  return hasNerdFont() ? "nerd" : "unicode";
++  if (configured !== "auto") return normalise(configured) ?? "unicode";
++  return hasNerdFont() ? "codicon" : "unicode";
+ };
+ 
+ const activeIconSet = (): IconSet => {
+   switch (resolveIconStyle()) {
+-    case "nerd":
+-      return nerdIcons;
++    case "codicon":
++      return codiconIcons;
+     case "emoji":
+       return emojiIcons;
+     case "none":
+@@ -146,7 +160,7 @@ export const getIcon = (icon: string | undefined, suggestionType: Fig.Suggestion
+   if (icon && /[^\u0000-\u00ff]/.test(icon) && style !== "unicode") {
+     return icon;
+   }
+-  if (icon && icon.startsWith("fig://icon?type=") && style === "nerd") {
++  if (icon && icon.startsWith("fig://icon?type=") && style === "codicon") {
+     const iconType = icon.split("fig://icon?type=")[1].toLowerCase();
+     const iconUtf = NerdFontIcons[iconType as keyof typeof NerdFontIcons];
+     if (iconUtf != null && iconUtf !== "") {
+diff --git a/src/tests/runtime/icons.test.ts b/src/tests/runtime/icons.test.ts
+index 7876013..0cc8851 100644
+--- a/src/tests/runtime/icons.test.ts
++++ b/src/tests/runtime/icons.test.ts
+@@ -23,7 +23,7 @@ afterEach(() => {
+ 
+ describe("icon style resolution", () => {
+   it("honours an explicit style over auto-detection", () => {
+-    (["nerd", "unicode", "emoji", "none"] as const).forEach((style) => {
++    (["codicon", "unicode", "emoji", "none"] as const).forEach((style) => {
+       expect(withStyle(style, resolveIconStyle)).toEqual(style);
+     });
+   });
+@@ -37,7 +37,7 @@ describe("icon sets", () => {
+   // The renderer reserves the icon column by measured width. A double-width glyph
+   // in a set therefore shunts that one row's label a cell out of line — the exact
+   // ragged column the emoji default was replaced to fix.
+-  it.each(["nerd", "unicode"])("renders every %s icon in a single cell", (style) => {
++  it.each(["codicon", "unicode"])("renders every %s icon in a single cell", (style) => {
+     withStyle(style, () => {
+       ALL_KEYS.forEach((key) => {
+         expect([key, wcswidth(SuggestionIcons[key])]).toEqual([key, 1]);
+@@ -69,8 +69,12 @@ describe("icon sets", () => {
+ });
+ 
+ describe("spec-supplied icons", () => {
+-  it("passes a literal glyph through under nerd and emoji", () => {
+-    expect(withStyle("nerd", () => getIcon("🍺", "arg"))).toEqual("🍺");
++  it('treats the old "nerd" style name as an alias for codicon', () => {
++    expect(withStyle("nerd", resolveIconStyle)).toEqual("codicon");
++  });
++
++  it("passes a literal glyph through under codicon and emoji", () => {
++    expect(withStyle("codicon", () => getIcon("🍺", "arg"))).toEqual("🍺");
+     expect(withStyle("emoji", () => getIcon("🍺", "arg"))).toEqual("🍺");
+   });
+ 
+@@ -80,15 +84,17 @@ describe("spec-supplied icons", () => {
+     });
+   });
+ 
+-  it("resolves fig:// icon urls to nerd glyphs only under nerd", () => {
++  it("resolves fig:// icon urls to brand glyphs only under codicon", () => {
+     const url = "fig://icon?type=git";
+-    expect(withStyle("nerd", () => getIcon(url, "subcommand"))).toEqual("");
++    // Brand marks (git, docker, npm) have no Codicon equivalent, so these stay
++    // Devicons — still Nerd Font territory, hence gated on the same style.
++    expect(withStyle("codicon", () => getIcon(url, "subcommand"))).toEqual("");
+     // Without a patched font that codepoint is tofu, so fall back to the type icon.
+     expect(withStyle("unicode", () => getIcon(url, "subcommand"))).toEqual(withStyle("unicode", () => SuggestionIcons.Subcommand));
+   });
+ 
+   it("falls back to the type icon for an unmapped fig:// icon url", () => {
+-    withStyle("nerd", () => {
++    withStyle("codicon", () => {
+       expect(getIcon("fig://icon?type=notathing", "option")).toEqual(SuggestionIcons.Option);
+     });
+   });
+diff --git a/src/ui/ui-doctor.ts b/src/ui/ui-doctor.ts
+index c6f87f9..bd9a302 100644
+--- a/src/ui/ui-doctor.ts
++++ b/src/ui/ui-doctor.ts
+@@ -28,6 +28,12 @@ const renderIconStyle = (): void => {
+   const sample = [SuggestionIcons.Subcommand, SuggestionIcons.Option, SuggestionIcons.File, SuggestionIcons.Folder].join(" ");
+   process.stdout.write(chalk.green("✓") + ` icons: ${chalk.bold(style)} ${style === "none" ? "" : chalk.dim(`(${sample})`)}\n`);
+ 
++  // Both of these bypass detection entirely, so reporting on fonts would be
++  // describing a decision that wasn't made.
++  if (process.env.IS_ICONS) {
++    process.stdout.write(chalk.dim(`  forced by IS_ICONS=${process.env.IS_ICONS} for this session; unset it to fall back to theme.icons\n`));
++    return;
++  }
+   if (getConfig().theme.icons !== "auto") {
+     process.stdout.write(chalk.dim(`  set explicitly via theme.icons; "auto" would pick for you\n`));
+     return;
+@@ -43,7 +49,7 @@ const renderIconStyle = (): void => {
+   } else if (!terminalConfigured) {
+     // The tofu case: font present, but this terminal isn't set to use it.
+     process.stdout.write(
+-      chalk.dim("  a Nerd Font is installed but this terminal isn't using it, so the plain set was chosen.\n") +
++      chalk.dim("  a Nerd Font (how a terminal receives Codicons) is installed, but this terminal\n  isn't using it, so the plain set was chosen.\n") +
+         chalk.dim("  set ") +
+         chalk.cyan("terminal.integrated.fontFamily") +
+         chalk.dim(' to e.g. "MesloLGS NF" to get the full icon set here\n'),
+diff --git a/src/utils/config.ts b/src/utils/config.ts
+index edc336b..cf3a5fc 100644
+--- a/src/utils/config.ts
++++ b/src/utils/config.ts
+@@ -20,10 +20,14 @@ type Binding = {
+ };
+ 
+ /**
+- * "auto" picks nerd when a patched font is installed and unicode otherwise, so
+- * the menu never renders a column of tofu on a machine that can't draw glyphs.
++ * "auto" picks codicon when the terminal can actually render the glyphs and
++ * unicode otherwise, so the menu never renders a column of tofu.
++ *
++ * "nerd" is the former name for "codicon" — the artwork changed from FontAwesome
++ * to Codicons, but a Nerd Font is still how a terminal receives either. Accepted
++ * as an alias so existing rc files keep working.
+  */
+-export type IconStyle = "auto" | "nerd" | "unicode" | "emoji" | "none";
++export type IconStyle = "auto" | "codicon" | "nerd" | "unicode" | "emoji" | "none";
+ 
+ type Theme = {
+   /** Box-drawing border colour. The engine always supported this but never set it. */
+@@ -165,7 +169,7 @@ const configSchema = {
+         pointer: { type: "string", nullable: true },
+         corners: { type: "string", nullable: true, enum: ["rounded", "square"] },
+         surface: { type: "string", nullable: true },
+-        icons: { type: "string", nullable: true, enum: ["auto", "nerd", "unicode", "emoji", "none"] },
++        icons: { type: "string", nullable: true, enum: ["auto", "codicon", "nerd", "unicode", "emoji", "none"] },
+       },
+     },
+   },
+@@ -257,7 +261,7 @@ export const loadConfig = async (program: Command) => {
+           surface: config?.theme?.surface ?? globalConfig.theme.surface,
+           // useNerdFont predates theme.icons and only ever gated fig:// icon URLs.
+           // Honoured as a shorthand so existing rc files keep working.
+-          icons: config?.theme?.icons ?? (config?.useNerdFont ? "nerd" : globalConfig.theme.icons),
++          icons: config?.theme?.icons ?? (config?.useNerdFont ? "codicon" : globalConfig.theme.icons),
+         },
+       };
+     }
+-- 
+2.51.0
+

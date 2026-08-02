@@ -1,0 +1,144 @@
+From 5cdbd96608aee3eddf8b4ee520ac437d6094c21e Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Sun, 2 Aug 2026 17:02:07 +0300
+Subject: [PATCH 13/13] feat: brand the command as termauto, and report a real
+ version
+
+Three hardcoded identity strings broke a fork that installs under a different
+name:
+
+  - the generated init scripts under ~/.inshellisense/init/ re-exec the engine
+    by bare name, so they pointed at a binary that isn't there and auto-start
+    silently never fired;
+  - commander printed `inshellisense` in every usage and error message;
+  - getVersion() returned the literal `__VERSION__`, because that token is
+    only substituted by the single-executable packaging step, which a plain
+    tsc build never runs.
+
+All three now read an env var (ISTERM_LAUNCHER, ISTERM_VERSION) and fall back
+to the upstream behaviour when unset, so a stock build is unchanged.
+---
+ src/index.ts         |  6 +++++-
+ src/utils/shell.ts   | 36 ++++++++++++++++++++++++------------
+ src/utils/version.ts | 10 +++++++++-
+ 3 files changed, 38 insertions(+), 14 deletions(-)
+
+diff --git a/src/index.ts b/src/index.ts
+index 26c6c7d..3967474 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -59,7 +59,11 @@ terminal reports reliably.
+ `;
+ 
+ program
+-  .name("inshellisense")
++  // The name commander prints in usage and error messages. It must match the
++  // binary the user actually invoked, or every `--help` example is uncopyable.
++  // ISTERM_LAUNCHER is exported by termauto's launcher shim; a stock upstream
++  // build has it unset and keeps calling itself inshellisense.
++  .name(process.env.ISTERM_LAUNCHER || "inshellisense")
+   .description("IDE style command line auto complete")
+   .version(getVersion(), "-v, --version", "output the current version")
+   .action(action(program))
+diff --git a/src/utils/shell.ts b/src/utils/shell.ts
+index edbb1d4..3060573 100644
+--- a/src/utils/shell.ts
++++ b/src/utils/shell.ts
+@@ -296,14 +296,26 @@ export const getShellSourceCommand = (shell: Shell): string => {
+   return "";
+ };
+ 
++/**
++ * Name the generated init scripts use to re-exec the engine.
++ *
++ * Those scripts land in ~/.inshellisense/init/<shell>/ and invoke the engine by
++ * BARE NAME, so this has to match whatever is actually linked onto PATH. A stock
++ * install links `is`; termauto links `termauto` and exports ISTERM_LAUNCHER from
++ * its launcher shim, so any regeneration from inside a termauto session writes
++ * the right name. A mismatch is silent — the shell just never wraps itself.
++ */
++const launcherName = (): string => process.env.ISTERM_LAUNCHER || "is";
++
+ export const getShellConfig = (shell: Shell): string => {
++  const is = launcherName();
+   switch (shell) {
+     case Shell.Zsh:
+       return `if [[ -z "\${ISTERM}" && $- = *i* && $- != *c* && -z "\${VSCODE_RESOLVING_ENVIRONMENT}" ]]; then
+   if [[ -o login ]]; then
+-    is -s zsh --login ; exit
++    ${is} -s zsh --login ; exit
+   else
+-    is -s zsh ; exit
++    ${is} -s zsh ; exit
+   fi
+ fi`;
+     case Shell.Bash:
+@@ -311,10 +323,10 @@ fi`;
+   shopt -q login_shell
+   login_shell=$?
+   if [ $login_shell -eq 0 ]; then
+-    is -s bash --login ; exit
++    ${is} -s bash --login ; exit
+   else
+-    is -s bash ; exit
+-  fi 
++    ${is} -s bash ; exit
++  fi
+ fi`;
+     case Shell.Powershell:
+     case Shell.Pwsh:
+@@ -322,26 +334,26 @@ fi`;
+ $__IsNoExitFlag = ([Environment]::GetCommandLineArgs() | Where-Object { $_ -imatch '^-noe(xit)?$' }).Count -gt 0
+ $__IsInteractive = -not $__IsCommandFlag -or ($__IsCommandFlag -and $__IsNoExitFlag)
+ if ([string]::IsNullOrEmpty($env:ISTERM) -and [Environment]::UserInteractive -and $__IsInteractive -and [string]::IsNullOrEmpty($env:VSCODE_RESOLVING_ENVIRONMENT)) {
+-  is -s ${shell}
++  ${is} -s ${shell}
+   Stop-Process -Id $pid
+ }`;
+     case Shell.Fish:
+       return `if test -z "$ISTERM" && status --is-interactive && test -z "$VSCODE_RESOLVING_ENVIRONMENT"
+   if status --is-login
+-    is -s fish --login ; kill %self
++    ${is} -s fish --login ; kill %self
+   else
+-    is -s fish ; kill %self
+-  end 
++    ${is} -s fish ; kill %self
++  end
+ end`;
+     case Shell.Xonsh:
+       return `if 'ISTERM' not in \${...} and $XONSH_INTERACTIVE and 'VSCODE_RESOLVING_ENVIRONMENT' not in \${...}:
+     if $XONSH_LOGIN:
+-        is -s xonsh --login ; exit
++        ${is} -s xonsh --login ; exit
+     else:
+-        is -s xonsh ; exit`;
++        ${is} -s xonsh ; exit`;
+     case Shell.Nushell:
+       return `if "ISTERM" not-in $env and $nu.is-interactive and "VSCODE_RESOLVING_ENVIRONMENT" not-in $env {
+-    if $nu.is-login { is -s nu --login ; exit } else { is -s nu ; exit }
++    if $nu.is-login { ${is} -s nu --login ; exit } else { ${is} -s nu ; exit }
+ }`;
+   }
+   return "";
+diff --git a/src/utils/version.ts b/src/utils/version.ts
+index faff6e2..1ab55fb 100644
+--- a/src/utils/version.ts
++++ b/src/utils/version.ts
+@@ -3,4 +3,12 @@
+ 
+ const version = "__VERSION__";
+ 
+-export const getVersion = (): string => version;
++/**
++ * The literal above is rewritten by scripts/pkg.ts when building the single
++ * executable. A plain `tsc` build — which is how termauto runs the engine —
++ * never goes through that step, so `--version` printed the raw placeholder.
++ *
++ * ISTERM_VERSION lets the embedding launcher supply its own version instead;
++ * termauto's shim reads it from the checkout's package.json.
++ */
++export const getVersion = (): string => process.env.ISTERM_VERSION || (version.startsWith("__") ? "0.0.0-dev" : version);
+-- 
+2.51.0
+

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # termauto — launcher for the vendored inshellisense engine.
 #
-# Deliberately thin: we do NOT rebrand binary/config names inside vendor/, because
-# that would touch utils/constants.ts, utils/shell.ts and utils/config.ts and
-# manufacture upstream merge conflicts for cosmetic gain. Config still lives at
-# the upstream location: ~/.config/inshellisense/rc.toml
+# Deliberately thin. The COMMAND is branded `termauto`; the on-disk locations are
+# not, because renaming those means touching utils/constants.ts and
+# utils/config.ts and manufacturing upstream merge conflicts for cosmetic gain.
+# So config still lives at the upstream location:
+#   config: ~/.config/inshellisense/rc.toml   (or ~/.inshellisenserc)
+#   data:   ~/.inshellisense/   (specs, generated init scripts, frecency history)
 #
 # Note: cwd is passed through untouched — the completion engine resolves
 # generators relative to the user's current directory, so changing it here would
@@ -12,7 +14,7 @@
 set -euo pipefail
 
 # Resolve symlinks before deriving ROOT. This script is normally reached through a
-# symlink (e.g. ~/.local/bin/is, which the generated shell init invokes by bare
+# symlink (~/.local/bin/termauto, which the generated shell init invokes by bare
 # name), and without resolving it ROOT would point at the symlink's directory
 # instead of the checkout. Done as a loop rather than `readlink -f` for portability.
 SELF="${BASH_SOURCE[0]}"
@@ -29,6 +31,20 @@ if [[ ! -f "$ENTRY" ]]; then
   echo "termauto: engine not built. Run: npm run setup" >&2
   exit 1
 fi
+
+# Two things read this: commander, for the name it prints in usage and errors;
+# and getShellConfig, for the bare name it bakes into the generated init scripts
+# under ~/.inshellisense/init/. Exporting it here means those scripts are always
+# regenerated pointing at `termauto`, never at upstream's `is`.
+export ISTERM_LAUNCHER="termauto"
+
+# The engine's own version string is a `__VERSION__` placeholder that only
+# upstream's single-executable packaging substitutes, so under a plain tsc build
+# `--version` has nothing real to print. Supply ours. sed rather than node: this
+# runs on every shell start, and a second node process just to read JSON is not
+# worth it. A malformed package.json simply leaves it unset, which is harmless.
+ISTERM_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/package.json" 2>/dev/null | head -1)"
+[[ -n "$ISTERM_VERSION" ]] && export ISTERM_VERSION || unset ISTERM_VERSION
 
 # `init` and `reinit` call unpackResources(), which in a non-SEA build reads
 # `process.cwd()/shell` and `process.cwd()/node_modules/@withfig/autocomplete/build`.

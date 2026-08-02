@@ -1,0 +1,276 @@
+From beb4d243249362a6b8b34c2d15db91fbaea6a185 Mon Sep 17 00:00:00 2001
+From: Amir <hello@noury.ch>
+Date: Sat, 1 Aug 2026 16:58:28 +0300
+Subject: [PATCH 02/13] feat(frecency): rank suggestions by directory-aware
+ usage history
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds an opt-out (useFrecency, default true) ranking boost based on how often
+and how recently a command was actually run in the current directory.
+
+- utils/frecency.ts: append-only JSONL at ~/.inshellisense/frecency.jsonl,
+  loaded once per session. The ranking path is pure in-memory map lookups, so
+  completion never touches disk. Writes are fire-and-forget.
+- suggestion.ts: the two inline priority sorts are replaced by a single shared
+  rankSuggestions(), so subcommand-driven and arg-driven completion cannot drift
+  apart in how they order the same suggestion.
+- pty.ts: records on PromptStarted, which is when a command has actually been
+  executed rather than merely typed, and where the shell cwd is known.
+
+The boost is bounded to 25 against the engine's own scale (options 45, spec
+default 50, generators 60) so history can lift a suggestion without flattening
+spec-declared intent. Hits decay with a 14-day half-life, and same-directory
+hits count 4x global ones — without that weighting the log curve saturates and
+a command used often elsewhere ranks nearly as high here as in its own project.
+
+With no history every boost is 0, so ordering is unchanged: all 93 existing
+snapshots pass untouched.
+
+---
+ src/isterm/pty.ts         |  19 +++++++++++++++++++
+ src/runtime/initialize.ts |   6 +++++-
+ src/runtime/suggestion.ts |  24 ++++++++++++++++++++++--
+ src/utils/config.ts       |   9 +++++++++
+ src/utils/frecency.ts     | Bin 0 -> 6791 bytes
+ 5 files changed, 55 insertions(+), 3 deletions(-)
+ create mode 100644 src/utils/frecency.ts
+
+diff --git a/src/isterm/pty.ts b/src/isterm/pty.ts
+index 4ac7233..6fa01c8 100644
+--- a/src/isterm/pty.ts
++++ b/src/isterm/pty.ts
+@@ -27,6 +27,7 @@ import * as ansi from "../utils/ansi.js";
+ import { Command } from "commander";
+ import which from "which";
+ import { shellResourcesPath } from "../utils/constants.js";
++import { recordCommand } from "../utils/frecency.js";
+ import { endTiming, startTiming } from "../utils/performance.js";
+ 
+ const ISTermOnDataEvent = "data";
+@@ -174,11 +175,29 @@ export class ISTerm implements IPty {
+     return cwd;
+   }
+ 
++  private _recordExecutedCommand(): void {
++    try {
++      const commandText = this.#commandManager.getState().commandText;
++      if (commandText != null && commandText.trim() !== "") {
++        recordCommand(commandText, this.cwd);
++      }
++    } catch (e) {
++      // Ranking data is strictly best-effort: never let it break a live session.
++      log.debug({ msg: "failed to record command for frecency", error: e instanceof Error ? e.message : e });
++    }
++  }
++
+   private _handleIsSequence(data: string): boolean {
+     const argsIndex = data.indexOf(";");
+     const sequence = argsIndex === -1 ? data : data.substring(0, argsIndex);
+     switch (sequence) {
+       case IstermOscPt.PromptStarted:
++        // A new prompt means whatever was on the previous one has now been run,
++        // so this is the point where we know a command was actually executed
++        // (rather than merely typed). Recorded before handlePromptStart() resets
++        // the active command. this.cwd is the shell's cwd at that time, which is
++        // what makes the ranking directory-aware.
++        this._recordExecutedCommand();
+         this.#commandManager.handlePromptStart();
+         break;
+       case IstermOscPt.PromptEnded:
+diff --git a/src/runtime/initialize.ts b/src/runtime/initialize.ts
+index a6550c0..a71c309 100644
+--- a/src/runtime/initialize.ts
++++ b/src/runtime/initialize.ts
+@@ -2,6 +2,8 @@
+ // Licensed under the MIT License.
+ 
+ import { setupZshDotfiles, Shell } from "../utils/shell.js";
++import { getConfig } from "../utils/config.js";
++import { loadFrecency } from "../utils/frecency.js";
+ 
+ type RuntimeModule = typeof import("./runtime.js");
+ 
+@@ -11,7 +13,9 @@ export const initializeRuntime = (shell: Shell, underTest = false): Promise<Runt
+   runtimeInitialization ??= (async () => {
+     const zshSetup = shell == Shell.Zsh ? setupZshDotfiles(underTest) : Promise.resolve();
+     const [runtime, alias] = await Promise.all([import("./runtime.js"), import("./alias.js")]);
+-    await Promise.all([runtime.loadLocalSpecsSet(), alias.loadAliases(shell), zshSetup]);
++    // Frecency history is read exactly once, here — the ranking path is pure
++    // in-memory map lookups so it never touches disk per keystroke.
++    await Promise.all([runtime.loadLocalSpecsSet(), alias.loadAliases(shell), zshSetup, loadFrecency(getConfig().useFrecency)]);
+     return runtime;
+   })();
+   return runtimeInitialization;
+diff --git a/src/runtime/suggestion.ts b/src/runtime/suggestion.ts
+index 17c14be..6fd8663 100644
+--- a/src/runtime/suggestion.ts
++++ b/src/runtime/suggestion.ts
+@@ -12,6 +12,7 @@ import log from "../utils/log.js";
+ import { escapePath } from "./utils.js";
+ import { addPathSeparator, endsWithPathSeparator, getPathDirname, removePathSeparator, Shell } from "../utils/shell.js";
+ import { getConfig } from "../utils/config.js";
++import { rankingBoost } from "../utils/frecency.js";
+ 
+ export enum SuggestionIcons {
+   File = "📄",
+@@ -295,6 +296,25 @@ function adjustPathSuggestions(
+   });
+ }
+ 
++/**
++ * Sole ranking entry point — used by BOTH recommendation paths.
++ *
++ * Kept as one function on purpose: subcommand-driven and arg-driven completion
++ * previously each carried their own inline `sort`, and letting them drift apart
++ * would mean the same suggestion ranks differently depending on which code path
++ * produced it.
++ *
++ * The frecency boost is additive on top of the spec's own priority, so
++ * spec-declared intent still sets the baseline order.
++ */
++const rankSuggestions = (suggestions: Suggestion[], acceptedTokens: CommandToken[], cwd: string): Suggestion[] => {
++  const prefix = acceptedTokens.map((t) => t.token);
++  return suggestions
++    .map((s) => ({ suggestion: s, score: s.priority + rankingBoost(prefix, s.name, cwd) }))
++    .sort((a, b) => b.score - a.score)
++    .map((entry) => entry.suggestion);
++};
++
+ const removeAcceptedSuggestions = (suggestions: Suggestion[], acceptedTokens: CommandToken[]): Suggestion[] => {
+   const seen = new Set<string>(acceptedTokens.map((t) => t.token));
+   return suggestions.filter((s) => s.allNames.every((n) => !seen.has(n)));
+@@ -369,7 +389,7 @@ export const getSubcommandDrivenRecommendation = async (
+           removeHomeDirectorySuggestion(
+             removeAcceptedSuggestions(
+               adjustPathSuggestions(
+-                suggestions.sort((a, b) => b.priority - a.priority),
++                rankSuggestions(suggestions, acceptedTokens, cwd),
+                 partialToken,
+                 lastToken,
+                 shell,
+@@ -424,7 +444,7 @@ export const getArgDrivenRecommendation = async (
+           removeHomeDirectorySuggestion(
+             removeAcceptedSuggestions(
+               adjustPathSuggestions(
+-                suggestions.sort((a, b) => b.priority - a.priority),
++                rankSuggestions(suggestions, acceptedTokens, cwd),
+                 partialToken,
+                 lastToken,
+                 shell,
+diff --git a/src/utils/config.ts b/src/utils/config.ts
+index 7993b5f..87c7901 100644
+--- a/src/utils/config.ts
++++ b/src/utils/config.ts
+@@ -32,6 +32,8 @@ type Config = {
+   useAliases: boolean;
+   useNerdFont: boolean;
+   maxSuggestions?: number;
++  /** Rank suggestions by how often/recently they were run in this directory. */
++  useFrecency: boolean;
+ };
+ 
+ const bindingSchema: JSONSchemaType<Binding> = {
+@@ -87,6 +89,11 @@ const configSchema = {
+       nullable: true,
+       default: 5,
+     },
++    useFrecency: {
++      type: "boolean",
++      nullable: true,
++      default: true,
++    },
+   },
+   additionalProperties: false,
+ };
+@@ -110,6 +117,7 @@ let globalConfig: Config = {
+   },
+   useAliases: false,
+   useNerdFont: false,
++  useFrecency: true,
+ };
+ 
+ export const getConfig = (): Config => globalConfig;
+@@ -140,6 +148,7 @@ export const loadConfig = async (program: Command) => {
+         useAliases: config.useAliases ?? false,
+         useNerdFont: config?.useNerdFont ?? false,
+         maxSuggestions: config?.maxSuggestions ?? 5,
++        useFrecency: config?.useFrecency ?? true,
+       };
+     }
+   }
+diff --git a/src/utils/frecency.ts b/src/utils/frecency.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ed3d9d1a7c530d31d5f7b6458817c9e93009578
+GIT binary patch
+literal 6791
+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
+
+literal 0
+HcmV?d00001
+
+-- 
+2.51.0
+

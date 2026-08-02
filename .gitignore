@@ -1,5 +1,10 @@
 # vendor/inshellisense keeps its OWN git repo (with an `upstream` remote) so our
-# frecency patch stays a single rebasable commit. Don't nest it in this repo.
+# patches stay a rebasable commit series. Don't nest it in this repo.
+#
+# NOTE: this is exactly why patches/ IS committed. It is regenerated output, and
+# the [PATCH n/m] counter rewrites every file whenever one is added — but it is
+# also the ONLY copy of our vendor changes that a fresh clone gets, so leaving it
+# out made the repo unable to bootstrap itself. Churn is the lesser problem.
 vendor/
 
 # compiled spec output
@@ -14,9 +19,3 @@ frecency/*.jsonl
 node_modules/
 *.log
 .DS_Store
-
-# Regenerated from vendor/inshellisense's git history by `npm run patches`, so
-# they are build output rather than source. Kept out of history because the
-# exported .patch files rewrite in full on every re-export — the [PATCH n/m]
-# counter alone touches every file whenever one is added.
-patches/

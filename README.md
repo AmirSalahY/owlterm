@@ -31,13 +31,32 @@ with ANSI escapes.
 > appear". `nvm install 22` or `brew install node@22` if you're on 23+.
 > Setup checks this and refuses to continue.
 
-### Three commands
+### One command
 
 ```sh
-git clone <this-repo> termauto && cd termauto
+curl -fsSL https://raw.githubusercontent.com/AmirSalahY/termauto/main/install.sh | bash
+```
+
+This clones the repo to `~/.termauto/src` and runs setup. Re-running it updates
+an existing checkout rather than re-cloning, and it refuses to touch one with
+uncommitted changes. Three environment variables tune it:
+
+| | |
+|---|---|
+| `TERMAUTO_HOME` | where to keep the checkout (default `~/.termauto/src`) |
+| `TERMAUTO_REF` | branch, tag or commit (default `main`) |
+| `TERMAUTO_REPO` | clone URL, for a fork |
+
+<details>
+<summary>Or clone it yourself</summary>
+
+```sh
+git clone https://github.com/AmirSalahY/termauto.git && cd termauto
 npm install
 npm run setup
 ```
+
+</details>
 
 `npm run setup` is idempotent — safe to re-run any time. It:
 
@@ -46,23 +65,32 @@ npm run setup
 3. installs deps and builds it,
 4. unpacks the ~716-entry Fig spec corpus into `~/.inshellisense/spec`,
 5. compiles our specs,
-6. links `bin/termauto` onto your PATH as **`is`** — the generated shell hook
-   invokes it by that bare name, and without it auto-start silently never fires,
-7. writes `~/.config/inshellisense/rc.toml` **with the absolute paths for that
+6. links `bin/termauto` onto your PATH as **`termauto`** — the generated shell
+   hook invokes it by that bare name, and without it auto-start silently never
+   fires,
+7. regenerates the shell init scripts so they invoke `termauto`, and removes any
+   leftover `is` link from before the rename,
+8. writes `~/.config/inshellisense/rc.toml` **with the absolute paths for that
    machine** — or, if you already have a config, prints the block to merge
    instead of overwriting it.
 
 Then start a session:
 
 ```sh
-./bin/termauto
+termauto
 ```
 
 Type `git ch`, `yarn `, or `xcodebuild -scheme ` and the dropdown appears.
 
+> **On names.** The command is `termauto`. The on-disk locations are still
+> upstream's — config at `~/.config/inshellisense/rc.toml`, data at
+> `~/.inshellisense/` — because renaming those means editing files we'd rather
+> keep conflict-free when rebasing on upstream. If you installed before the
+> rename, `npm run setup` removes the old `is` link for you.
+
 ### Keys
 
-Run `is --help` for this table in the terminal.
+Run `termauto --help` for this table in the terminal.
 
 | Key | Action |
 | --- | --- |
@@ -123,13 +151,13 @@ npm run shell-init          # zsh (default) — or: npm run shell-init bash
 npm run shell-init -- --dry-run   # preview without writing
 ```
 
-Use this rather than the upstream `is init zsh >> ~/.zshrc`, because it also:
+Use this rather than the upstream `termauto init zsh >> ~/.zshrc`, because it also:
 
 - **backs up** your rc file first,
 - **syntax-checks** the result and **restores the backup if it broke** (a broken
   `.zshrc` breaks every new shell),
 - refuses to add itself twice,
-- fails loudly if `is` isn't on PATH instead of writing a hook that silently
+- fails loudly if `termauto` isn't on PATH instead of writing a hook that silently
   never starts,
 - and wraps the hook in a **stronger guard** than the generated script's.
 
@@ -141,13 +169,14 @@ Use this rather than the upstream `is init zsh >> ~/.zshrc`, because it also:
 > It **must be the last thing** in the rc file. Anything initialising after it —
 > notably a plugin manager — can break it.
 
-For fish / pwsh / nu: `./bin/termauto init <shell>`, placed last in that rc file.
+For fish / pwsh / nu: `termauto init <shell>`, placed last in that rc file.
 
 **To undo:** delete the `termauto (inshellisense)` block from `~/.zshrc` (a
 timestamped `~/.zshrc.pre-termauto-*` backup is kept). Full removal:
 
 ```sh
-rm -rf ~/.inshellisense ~/.config/inshellisense ~/.local/bin/is
+rm -rf ~/.inshellisense ~/.config/inshellisense ~/.local/bin/termauto
+rm -rf ~/.termauto        # only if you installed via install.sh
 ```
 
 ### Verify the install
@@ -170,7 +199,7 @@ It keys on a spec that exists *only* here, because most of ours override bundled
 specs (`adb`, `xcodebuild`) — seeing those names would prove nothing, since
 they'd be loaded anyway. If it fails, `specs.path` isn't pointing at this
 checkout's `specs/build`; the usual cause is a pre-existing config that setup
-declined to overwrite (step 6 prints the block to merge).
+declined to overwrite (step 8 prints the block to merge).
 
 ---
 
@@ -180,29 +209,31 @@ declined to overwrite (step 6 prints the block to merge).
 with an `upstream` remote so our changes stay a rebasable series.
 
 ```
+install.sh          curl-pipe installer: clone + hand off to setup
 scripts/setup.mjs   bootstrap: clone pinned engine, apply patches, build, configure
 specs/src/          our specs (filename = command name)
 specs/src/lib/      shared generators + spec-augment helpers
 specs/refresh/      --help vs spec drift report
 bin/termauto        launcher (path-independent)
-patches/            NOT committed — regenerated by `npm run patches`
+patches/            our 13 engine commits, exported by `npm run patches`
 vendor/             NOT committed — recreated by `npm run setup`
 ```
 
-> ### ⚠️ The engine changes are not in this repo
+> ### The engine changes live in `patches/`
 >
-> `patches/` is gitignored, and `vendor/inshellisense` has its own repo with no
-> remote. The 8 engine commits — frecency, Enter/Right accept, the styled menu,
-> the icon sets, the Esc fix — therefore exist **only on the machine that made
-> them**, in `vendor/inshellisense/.git` and the untracked `patches/` directory.
+> `vendor/inshellisense` keeps its own git repo with no remote, so the 13 engine
+> commits — frecency, Enter/Right accept, the styled menu, the icon sets, the Esc
+> fix, the `termauto` branding — exist there as real commits and nowhere else.
+> `patches/` is the exported copy, and it **is committed**: it is the only form in
+> which those changes reach another machine. Without it a fresh clone installs
+> vanilla inshellisense and none of the above works.
 >
-> A fresh clone runs `npm run setup`, finds no `patches/`, and installs vanilla
-> inshellisense: none of the above, and Esc stays broken. That is expected, not a
-> bug — but it means **`vendor/inshellisense/.git` is the only copy of that work.**
-> Back it up, or push it to a fork, before wiping the checkout.
+> The files are regenerated output and churn badly — the `[PATCH n/m]` counter
+> rewrites every one of them whenever a commit is added — which is why they were
+> gitignored originally. Being able to bootstrap is worth the noisy diffs.
 
-**If you edit anything under `vendor/`, run `make patches`** to refresh the local
-`patches/`. It keeps this machine reproducible; it no longer travels with the repo.
+**If you edit anything under `vendor/`, run `make patches` and commit the
+result.** Skipping it means the change works here and nowhere else.
 
 ---
 
@@ -326,10 +357,10 @@ one-liner, and you must also select it as your terminal's font:
 brew install --cask font-jetbrains-mono-nerd-font
 ```
 
-`is doctor` prints the resolved style with a sample row and names which of the two
-conditions failed, which is the quickest way to tell "no font installed" from
-"font installed but this terminal isn't using it". `IS_ICONS=emoji is` overrides
-the style for one session without touching config.
+`termauto doctor` prints the resolved style with a sample row and names which of
+the two conditions failed, which is the quickest way to tell "no font installed"
+from "font installed but this terminal isn't using it". `IS_ICONS=emoji termauto`
+overrides the style for one session without touching config.
 
 Why not SVG: no terminal renders SVG. The image protocols that exist (iTerm2
 inline images, Kitty, Sixel) take rasterised bitmaps, aren't supported by every

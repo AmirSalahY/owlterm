@@ -28,7 +28,7 @@ verify:
 
 ## Headless completion probe: make complete Q="adb -s "
 complete:
-	@cd $(VENDOR) && node build/index.js complete "$(Q)"
+	@./bin/termauto complete "$(Q)"
 
 ## Replay our patches onto the latest upstream, then re-export them
 upstream:

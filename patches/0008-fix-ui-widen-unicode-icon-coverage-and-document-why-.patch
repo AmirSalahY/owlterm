@@ -1,0 +1,393 @@
+From 42ac21d94e0bcf289aab8ac00a69e19404eb3b66 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <hello@noury.ch>
+Date: Sun, 2 Aug 2026 12:56:54 +0300
+Subject: [PATCH 08/13] fix(ui): widen unicode icon coverage, and document why
+ it is the safe set
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Swaps the two glyphs with the worst font coverage: U+2043 hyphen-bullet and
+U+2B21 white hexagon are absent from most system monospace fonts. Middle dot and
+section sign are present natively in Menlo — the font a VS Code terminal falls
+back to, and the one that was rendering nothing — taking it from 7/9 to 9/9 with
+no reliance on substitution.
+
+Records the asymmetry that actually governs this: assigned codepoints get OS font
+fallback (Menlo has no emoji yet draws them; Monaco has no U+256D yet draws
+rounded corners), while the private use area gets none, because no system font
+claims it. That is why Codicons need their patched font selected in every
+terminal and unicode does not.
+
+Adds scripts/icon-check.sh to print all three sets raw in a given terminal.
+
+---
+ src/runtime/icons.ts                          | 17 +++--
+ .../__snapshots__/runtime.test.ts.snap        | 72 +++++++++----------
+ 2 files changed, 48 insertions(+), 41 deletions(-)
+
+diff --git a/src/runtime/icons.ts b/src/runtime/icons.ts
+index fb5eba0..f6fb3b8 100644
+--- a/src/runtime/icons.ts
++++ b/src/runtime/icons.ts
+@@ -39,17 +39,24 @@ const codiconIcons: IconSet = {
+ };
+ 
+ /**
+- * Geometric symbols that render in essentially any monospace font. The fallback
+- * when no Nerd Font is installed: monochrome and single-cell like the Codicon
+- * set, so the menu keeps its shape either way.
++ * The set that works in every terminal, and the fallback when a patched font
++ * isn't in use.
++ *
++ * These are real assigned codepoints, not private use area ones, which is the
++ * whole difference: when a terminal's font lacks one, the OS substitutes a font
++ * that has it. Nothing substitutes for the PUA, because no system font claims
++ * those codepoints — which is exactly why Codicons vanish where these survive.
++ *
++ * Monochrome and single-cell like the Codicon set, so the menu keeps its shape
++ * either way.
+  */
+ const unicodeIcons: IconSet = {
+   File: "▪",
+   Folder: "▸",
+   Subcommand: "◆",
+-  Option: "⁃",
++  Option: "·",
+   Argument: "◇",
+-  Mixin: "⬡",
++  Mixin: "§",
+   // ↯ rather than the more obvious ⚡, which is double-width and would be the one
+   // glyph in the set that pushes its label a cell out of line.
+   Shortcut: "↯",
+diff --git a/src/tests/runtime/__snapshots__/runtime.test.ts.snap b/src/tests/runtime/__snapshots__/runtime.test.ts.snap
+index 3bf4ea7..57a4872 100644
+--- a/src/tests/runtime/__snapshots__/runtime.test.ts.snap
++++ b/src/tests/runtime/__snapshots__/runtime.test.ts.snap
+@@ -15,7 +15,7 @@ exports[`parseCommand alreadyUsedOption 1`] = `
+       ],
+       "description": "Display system information for bug report",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--bug-report",
+       "priority": 50,
+@@ -111,7 +111,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Defines the path where the artifact server stores uploads and retrieves downloads from. If not specified the artifact server will not start",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--artifact-server-path",
+       "priority": 45,
+@@ -123,7 +123,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Defines the port where the artifact server listens (will only bind to localhost)",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--artifact-server-port",
+       "priority": 45,
+@@ -135,7 +135,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Architecture which should be used to run containers, e.g.: linux/amd64. If not specified, will use host default architecture. Requires Docker server API Version 1.41+. Ignored on earlier Docker server platforms",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--container-architecture",
+       "priority": 45,
+@@ -147,7 +147,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Path to Docker daemon socket which will be mounted to containers",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--container-daemon-socket",
+       "priority": 45,
+@@ -160,7 +160,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Working directory",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--directory",
+       "priority": 45,
+@@ -173,7 +173,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Dryrun mode",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--dryrun",
+       "priority": 45,
+@@ -185,7 +185,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Environment file to read and use as env in the containers",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--env-file",
+       "priority": 45,
+@@ -197,7 +197,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "GitHub instance to use. Don't use this if you are not using GitHub Enterprise Server",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--github-instance",
+       "priority": 45,
+@@ -209,7 +209,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "NOT RECOMMENDED! Doesn't hide secrets while printing logs",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--insecure-secrets",
+       "priority": 45,
+@@ -221,7 +221,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Output logs in json format",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--json",
+       "priority": 45,
+@@ -233,7 +233,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Flag to disable running workflows from subdirectories of specified path in '--workflows'/'-W' flag",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--no-recurse",
+       "priority": 45,
+@@ -245,7 +245,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Do not skip actions/checkout",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--no-skip-checkout",
+       "priority": 45,
+@@ -258,7 +258,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Disable logging of output from steps",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--quiet",
+       "priority": 45,
+@@ -270,7 +270,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "File with list of secrets to read from (e.g. --secret-file .secrets)",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--secret-file",
+       "priority": 45,
+@@ -283,7 +283,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Verbose output",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--verbose",
+       "priority": 45,
+@@ -296,7 +296,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Path to workflow file(s)",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--workflows",
+       "priority": 45,
+@@ -309,7 +309,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Display help",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--help",
+       "priority": 45,
+@@ -321,7 +321,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Disable completion descriptions",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--no-descriptions",
+       "priority": 45,
+@@ -348,7 +348,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Print a newline between matches in different files. Enabled by default",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--nobreak",
+       "priority": 50,
+@@ -360,7 +360,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't print color codes in results",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--nocolor",
+       "priority": 50,
+@@ -372,7 +372,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't print file names",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--nofilename",
+       "priority": 50,
+@@ -384,7 +384,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't follow symlinks",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--nofollow",
+       "priority": 50,
+@@ -396,7 +396,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Refrains from lumping matches in the same file together, and instead places the filename at the start of each match line",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--nogroup",
+       "priority": 50,
+@@ -408,7 +408,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't print filenames above matching contents",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--noheading",
+       "priority": 50,
+@@ -420,7 +420,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't use of memory-mapped I/O. Defaults to true on platforms where mmap() is faster than read(). (All but macOS.)",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--nommap",
+       "priority": 50,
+@@ -432,7 +432,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't match regexes across newlines",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--nomultiline",
+       "priority": 50,
+@@ -445,7 +445,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't recurse into directories",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--norecurse",
+       "priority": 50,
+@@ -457,7 +457,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't print line numbers",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--nonumbers",
+       "priority": 50,
+@@ -482,7 +482,7 @@ exports[`parseCommand fullyTypedSuggestion 1`] = `
+       ],
+       "description": "Display whiteouts when scanning directories.  (-S) flag)",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "-W",
+       "priority": 50,
+@@ -494,7 +494,7 @@ exports[`parseCommand fullyTypedSuggestion 1`] = `
+       ],
+       "description": "Force raw printing of non-printable characters.  This is the default when output is not to a terminal",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "-w",
+       "priority": 50,
+@@ -539,7 +539,7 @@ exports[`parseCommand noArgsArgumentGiven 1`] = `
+       ],
+       "description": "Static analyzer report output format",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--analyzer-output",
+       "priority": 45,
+@@ -551,7 +551,7 @@ exports[`parseCommand noArgsArgumentGiven 1`] = `
+       ],
+       "description": "Run the static analyzer",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "--analyze",
+       "priority": 45,
+@@ -563,7 +563,7 @@ exports[`parseCommand noArgsArgumentGiven 1`] = `
+       ],
+       "description": "Emit ARC errors even if the migrator can fix them",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "-arcmt-migrate-emit-errors",
+       "priority": 45,
+@@ -603,7 +603,7 @@ exports[`parseCommand optionsSuggestedAfterVariadicArg 1`] = `
+       ],
+       "description": "Follow all symbolic links to final target and list the file or directory the link references rather than the link itself.  This option cancels the -P option",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "-L",
+       "priority": 50,
+@@ -615,7 +615,7 @@ exports[`parseCommand optionsSuggestedAfterVariadicArg 1`] = `
+       ],
+       "description": "(The lowercase letter \`\`ell''.)  List in long format.  (See below.)  A total sum for all the file sizes is output on a line before the long listing",
+       "hidden": undefined,
+-      "icon": "⁃",
++      "icon": "·",
+       "insertValue": undefined,
+       "name": "-l",
+       "priority": 50,
+-- 
+2.51.0
+

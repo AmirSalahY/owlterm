@@ -1,0 +1,1107 @@
+From 68d32207ede7b1e0226d0cab665df9627c608206 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <hello@noury.ch>
+Date: Sun, 2 Aug 2026 15:17:05 +0300
+Subject: [PATCH 09/13] feat(ui): Amazon Q's action model for keys, and
+ sortMethod for ordering
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Keys — named actions with per-key accept modes, adapted from Q's 34-action enum
+to what a terminal can actually express:
+  Alt+1..9    accept the Nth visible row      Alt+i  insert the common prefix
+  Alt+Enter   accept and run                  Alt+d  toggle the description
+  Alt+l / s   grow / shrink the list
+Only Alt+letter, Alt+digit and Alt+Enter are bindable: terminals send Alt as an
+ESC prefix, readline reports Alt+punctuation with no key name, and Alt+[ is
+indistinguishable from the start of a CSI sequence. Verified before choosing
+defaults. The three accept keys gain Q's modes (insert | insertOrPrefix |
+ignore), replacing two booleans that could only express insert-or-nothing;
+acceptOnEnter/acceptOnRightArrow still work as shorthands.
+
+Ordering — sortMethod: frecency (default) | recency | alphabetical | none.
+recency is a faithful port of Q's updatePriorities, limitations included, since
+the point of offering it is to be that model. Both usage modes now also learn
+from accepted suggestions (Q's updateAutocompleteIndexFromUserInsert), weighted
+half an execution: a completion can be accepted and then thought better of.
+
+Fixes two bugs found while building this:
+
+1. Frecency was dead for every subcommand. rankSuggestions keyed off
+   acceptedTokens, which the recursion seeds as [] and never fills with the
+   command name, so it looked up "rebase" while history had stored
+   "git rebase". Now keyed off the complete tokens in allTokens. Unit tests on
+   rankingBoost() passed throughout; only an end-to-end test catches it, and
+   there is now one.
+2. alt+Enter reaches update() as name "return", so it tripped the
+   clear-on-Enter branch and wiped the line executeSelected was about to
+   complete.
+
+Keys documented in Usage: inshellisense [options] [command]
+
+IDE style command line auto complete
+
+Options:
+  -v, --version        output the current version
+  -l, --login          start shell as a login shell
+  -s, --shell <shell>  shell to use for command execution, supported shells:
+                       bash, pwsh, zsh, fish, xonsh, nu
+  -c, --check          check if shell is in an inshellisense session
+  -V, --verbose        enable verbose logging
+  -h, --help           display help for command
+
+Commands:
+  init [shell]         generates shell configurations & prints the source
+                       command for a specified shell
+  reinit               regenerates shell configurations
+  doctor               checks the health of this inshellisense installation
+  specs                manage specs
+  complete <input>     generates a completion for the provided input
+  uninstall            removes all cache resources and configuration for
+                       inshellisense
+
+Keys (while the suggestion menu is open):
+  Tab                accept the highlighted suggestion
+  Enter              accept, then Enter again to run
+  Right              accept, only with the cursor at end of line
+  Up / Down          move the selection
+  Esc                dismiss for the rest of the line; Tab reopens
+  Alt+1 .. Alt+9     accept the Nth visible suggestion
+  Alt+i              insert the prefix common to every suggestion
+  Alt+Enter          accept and run in one keystroke
+  Alt+d              show/hide the description panel
+  Alt+l / Alt+s      show more / fewer suggestions
+
+Suggestion order (sortMethod):
+  frecency           how often and how recently you ran it here (default)
+  recency            last used only, no decay — Amazon Q's model
+  alphabetical       by name, ignoring usage
+  none               spec-declared priority only
+
+Configure both in ~/.config/inshellisense/rc.toml, under [bindings], [keys] and
+sortMethod. Alt+letter, Alt+digit and Alt+Enter are the only Alt combinations a
+terminal reports reliably. and the README.
+
+---
+ src/index.ts                |  32 +++++-
+ src/runtime/suggestion.ts   |  38 +++++--
+ src/tests/keys.test.ts      | 200 ++++++++++++++++++++++++++++++++++
+ src/tests/ordering.test.ts  | 187 ++++++++++++++++++++++++++++++++
+ src/ui/suggestionManager.ts | 208 +++++++++++++++++++++++++++++++-----
+ src/utils/config.ts         | 102 +++++++++++++++++-
+ src/utils/frecency.ts       | Bin 6765 -> 9243 bytes
+ 7 files changed, 733 insertions(+), 34 deletions(-)
+ create mode 100644 src/tests/keys.test.ts
+ create mode 100644 src/tests/ordering.test.ts
+
+diff --git a/src/index.ts b/src/index.ts
+index 39c70fd..accd16b 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -24,6 +24,35 @@ const hiddenOption = (flags: string, description: string) => {
+   return option;
+ };
+ 
++/**
++ * Hardcoded rather than read from the config, because --help runs before
++ * loadConfig() and must work even when the rc file is invalid — the moment you
++ * most need to look up a keybinding. Rebinding is documented alongside.
++ */
++const keybindingHelp = () => `
++Keys (while the suggestion menu is open):
++  Tab                accept the highlighted suggestion
++  Enter              accept, then Enter again to run
++  Right              accept, only with the cursor at end of line
++  Up / Down          move the selection
++  Esc                dismiss for the rest of the line; Tab reopens
++  Alt+1 .. Alt+9     accept the Nth visible suggestion
++  Alt+i              insert the prefix common to every suggestion
++  Alt+Enter          accept and run in one keystroke
++  Alt+d              show/hide the description panel
++  Alt+l / Alt+s      show more / fewer suggestions
++
++Suggestion order (sortMethod):
++  frecency           how often and how recently you ran it here (default)
++  recency            last used only, no decay — Amazon Q's model
++  alphabetical       by name, ignoring usage
++  none               spec-declared priority only
++
++Configure both in ~/.config/inshellisense/rc.toml, under [bindings], [keys] and
++sortMethod. Alt+letter, Alt+digit and Alt+Enter are the only Alt combinations a
++terminal reports reliably.
++`;
++
+ program
+   .name("inshellisense")
+   .description("IDE style command line auto complete")
+@@ -34,7 +63,8 @@ program
+   .option("-c, --check", `check if shell is in an inshellisense session`)
+   .addOption(hiddenOption("-T, --test", "used to make e2e tests reproducible across machines"))
+   .option("-V, --verbose", `enable verbose logging`)
+-  .passThroughOptions();
++  .passThroughOptions()
++  .addHelpText("after", keybindingHelp());
+ 
+ program.addCommand(init);
+ program.addCommand(reinit);
+diff --git a/src/runtime/suggestion.ts b/src/runtime/suggestion.ts
+index 0dfd3f3..fd9b2f4 100644
+--- a/src/runtime/suggestion.ts
++++ b/src/runtime/suggestion.ts
+@@ -12,7 +12,7 @@ import log from "../utils/log.js";
+ import { escapePath } from "./utils.js";
+ import { addPathSeparator, endsWithPathSeparator, getPathDirname, removePathSeparator, Shell } from "../utils/shell.js";
+ import { getConfig } from "../utils/config.js";
+-import { rankingBoost } from "../utils/frecency.js";
++import { rankingBoost, recencyPriority } from "../utils/frecency.js";
+ // Re-exported for the many call sites (and tests) that reach for icons via this module.
+ export { SuggestionIcons, NerdFontIcons, getIcon, resolveIconStyle } from "./icons.js";
+ import { getIcon } from "./icons.js";
+@@ -229,10 +229,36 @@ function adjustPathSuggestions(
+  * The frecency boost is additive on top of the spec's own priority, so
+  * spec-declared intent still sets the baseline order.
+  */
+-const rankSuggestions = (suggestions: Suggestion[], acceptedTokens: CommandToken[], cwd: string): Suggestion[] => {
+-  const prefix = acceptedTokens.map((t) => t.token);
++const rankSuggestions = (suggestions: Suggestion[], allTokens: CommandToken[], cwd: string): Suggestion[] => {
++  // Derived from allTokens, NOT acceptedTokens: the recursion is seeded with
++  // activeCmd.slice(1) and acceptedTokens defaulted to [], so the command name is
++  // absent from it at every depth. Ranking off that produced the key "rebase"
++  // while recordCommand had stored "git rebase" — they never matched, and the
++  // boost was silently dead for every subcommand.
++  //
++  // Complete tokens only, so the partial word being typed isn't treated as part
++  // of the prefix it is trying to complete.
++  const prefix = allTokens.filter((t) => t.complete).map((t) => t.token);
++  const method = getConfig().sortMethod;
++
++  if (method === "alphabetical") {
++    // Purely by name — priority deliberately ignored too. Keeping it as the
++    // primary key would band options (45) below subcommands (50), so the list
++    // would not actually read A-Z, which is the one thing this mode promises.
++    return [...suggestions].sort((a, b) => a.name.localeCompare(b.name));
++  }
++
++  const score =
++    method === "none"
++      ? (s: Suggestion) => s.priority
++      : method === "recency"
++      ? (s: Suggestion) => recencyPriority(prefix, s.name, cwd, s.priority)
++      : // Additive on top of the spec's own priority, so spec-declared intent
++        // still sets the baseline order.
++        (s: Suggestion) => s.priority + rankingBoost(prefix, s.name, cwd);
++
+   return suggestions
+-    .map((s) => ({ suggestion: s, score: s.priority + rankingBoost(prefix, s.name, cwd) }))
++    .map((s) => ({ suggestion: s, score: score(s) }))
+     .sort((a, b) => b.score - a.score)
+     .map((entry) => entry.suggestion);
+ };
+@@ -309,7 +335,7 @@ export const getSubcommandDrivenRecommendation = async (
+       removeEmptySuggestion(
+         removeHiddenSuggestions(
+           removeHomeDirectorySuggestion(
+-            removeAcceptedSuggestions(adjustPathSuggestions(rankSuggestions(suggestions, acceptedTokens, cwd), partialToken, lastToken, shell), acceptedTokens),
++            removeAcceptedSuggestions(adjustPathSuggestions(rankSuggestions(suggestions, allTokens, cwd), partialToken, lastToken, shell), acceptedTokens),
+             allTokens,
+           ),
+           partialToken,
+@@ -356,7 +382,7 @@ export const getArgDrivenRecommendation = async (
+       removeEmptySuggestion(
+         removeHiddenSuggestions(
+           removeHomeDirectorySuggestion(
+-            removeAcceptedSuggestions(adjustPathSuggestions(rankSuggestions(suggestions, acceptedTokens, cwd), partialToken, lastToken, shell), acceptedTokens),
++            removeAcceptedSuggestions(adjustPathSuggestions(rankSuggestions(suggestions, allTokens, cwd), partialToken, lastToken, shell), acceptedTokens),
+             allTokens,
+           ),
+           partialToken,
+diff --git a/src/tests/keys.test.ts b/src/tests/keys.test.ts
+new file mode 100644
+index 0000000..26f8d53
+--- /dev/null
++++ b/src/tests/keys.test.ts
+@@ -0,0 +1,200 @@
++// Copyright (c) Microsoft Corporation.
++// Licensed under the MIT License.
++
++// Lives outside src/tests/ui/ deliberately: that directory is excluded from
++// `npm test` (testPathIgnorePatterns) because its suites drive a real pty. These
++// exercise key dispatch against a stub terminal, so they run in the normal suite.
++
++import { SuggestionManager, resetSizeOverride, getMaxLines } from "../ui/suggestionManager.js";
++import { Shell } from "../utils/shell.js";
++import { Suggestion, SuggestionBlob } from "../runtime/model.js";
++
++const makeTerm = (commandText: string, cursorTerminated = true) => {
++  const written: string[] = [];
++  return {
++    written,
++    cols: 120,
++    cwd: "/tmp/project",
++    getCommandState: () => ({ commandText, cursorTerminated, hasOutput: false }),
++    write: (data: string) => written.push(data),
++    clearCommand: () => written.push("<clear>"),
++    noop: () => {},
++  };
++};
++
++const suggestion = (name: string, extra: Partial<Suggestion> = {}): Suggestion => ({
++  name,
++  allNames: [name],
++  icon: "",
++  priority: 50,
++  ...extra,
++});
++
++/**
++ * Loads a blob through the real runtime seam rather than poking at private
++ * state, so the tests break if the load path changes shape.
++ */
++const makeManager = async (term: ReturnType<typeof makeTerm>, suggestions: Suggestion[], token?: string) => {
++  const activeToken = token == null ? undefined : { token, tokenLength: token.length, complete: false, isOption: false };
++  const blob: SuggestionBlob = { suggestions, activeToken };
++  const manager = new SuggestionManager(term as never, Shell.Zsh, Promise.resolve({ getSuggestions: async () => blob }));
++  await manager.exec();
++  return manager;
++};
++
++const press = (name: string, mods: { meta?: boolean; ctrl?: boolean; shift?: boolean } = {}) => ({
++  name,
++  sequence: name,
++  ctrl: !!mods.ctrl,
++  shift: !!mods.shift,
++  meta: !!mods.meta,
++});
++
++const BACKSPACE = "";
++
++beforeEach(() => resetSizeOverride());
++
++describe("select by number", () => {
++  it("accepts the Nth visible suggestion on alt+N", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("add"), suggestion("branch"), suggestion("commit")]);
++
++    expect(m.update(press("2", { meta: true }))).toBe(true);
++    expect(term.written.join("")).toEqual("branch ");
++  });
++
++  it("ignores a number past the end of the list", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("add")]);
++
++    expect(m.update(press("5", { meta: true }))).toBe(false);
++    expect(term.written).toEqual([]);
++  });
++
++  it("leaves a bare digit alone so it stays ordinary input", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("add"), suggestion("branch")]);
++
++    expect(m.update(press("2"))).toBe(false);
++    expect(term.written).toEqual([]);
++  });
++});
++
++describe("insertCommonPrefix", () => {
++  it("inserts the shared prefix without committing the token", async () => {
++    const term = makeTerm("git c");
++    const m = await makeManager(term, [suggestion("commit"), suggestion("config")], "c");
++
++    expect(m.update(press("i", { meta: true }))).toBe(true);
++    // Replaces the typed token with the full shared prefix and stops there — no
++    // trailing space, because "co" is still ambiguous between the two.
++    expect(term.written.join("")).toEqual(BACKSPACE.repeat(1) + "co");
++  });
++
++  it("is a no-op once the typed token already is the shared prefix", async () => {
++    const term = makeTerm("git co");
++    const m = await makeManager(term, [suggestion("commit"), suggestion("config")], "co");
++
++    expect(m.update(press("i", { meta: true }))).toBe(false);
++    expect(term.written).toEqual([]);
++  });
++
++  it("extends to the full shared prefix when it is longer than what was typed", async () => {
++    const term = makeTerm("git com");
++    const m = await makeManager(term, [suggestion("commit"), suggestion("commit-tree")], "com");
++
++    expect(m.update(press("i", { meta: true }))).toBe(true);
++    expect(term.written.join("")).toEqual(BACKSPACE.repeat(3) + "commit");
++  });
++
++  it("does nothing when the candidates diverge at what was typed", async () => {
++    const term = makeTerm("git c");
++    const m = await makeManager(term, [suggestion("commit"), suggestion("branch")], "c");
++
++    expect(m.update(press("i", { meta: true }))).toBe(false);
++    expect(term.written).toEqual([]);
++  });
++
++  it("does nothing with a single candidate — that is plain acceptance", async () => {
++    const term = makeTerm("git co");
++    const m = await makeManager(term, [suggestion("commit")], "co");
++
++    expect(m.update(press("i", { meta: true }))).toBe(false);
++  });
++});
++
++describe("executeSelected", () => {
++  it("accepts and submits in one keystroke", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("status")]);
++
++    expect(m.update(press("return", { meta: true }))).toBe(true);
++    expect(term.written.join("")).toEqual("status \r");
++  });
++
++  it("falls through when there is nothing left to accept", async () => {
++    const term = makeTerm("git status");
++    // Fully typed: calculateReplacement has nothing to insert but a space.
++    const m = await makeManager(term, [suggestion("status")], "status");
++
++    expect(m.update(press("return", { meta: true }))).toBe(false);
++  });
++});
++
++describe("size", () => {
++  it("grows and shrinks the visible list", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("add")]);
++    const before = getMaxLines();
++
++    expect(m.update(press("l", { meta: true }))).toBe(true);
++    expect(getMaxLines()).toBeGreaterThan(before);
++
++    expect(m.update(press("s", { meta: true }))).toBe(true);
++    expect(getMaxLines()).toEqual(before);
++  });
++
++  it("stays swallowed at the floor rather than leaking the escape sequence", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("add")]);
++
++    for (let i = 0; i < 30; i++) m.update(press("s", { meta: true }));
++    expect(m.update(press("s", { meta: true }))).toBe(true);
++    expect(term.written).toEqual([]);
++  });
++});
++
++describe("toggleDescription", () => {
++  it("hides the description panel and keeps the menu open", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("add", { description: "Add file contents to the index" })]);
++
++    const rowWidth = (rows: { length: number }[]) => Math.max(...rows.map((r) => r.length));
++    const shown = rowWidth(m.render("below", 0));
++
++    expect(m.update(press("d", { meta: true }))).toBe(true);
++    const hidden = rowWidth(m.render("below", 0));
++    expect(hidden).toBeLessThan(shown);
++
++    // Toggles back.
++    expect(m.update(press("d", { meta: true }))).toBe(true);
++    expect(rowWidth(m.render("below", 0))).toEqual(shown);
++  });
++});
++
++describe("modifiers are not confused", () => {
++  it("does not treat ctrl+d as alt+d", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("add", { description: "desc" })]);
++
++    expect(m.update(press("d", { ctrl: true }))).toBe(false);
++  });
++
++  it("still accepts on plain tab", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("add")]);
++
++    expect(m.update(press("tab"))).toBe(true);
++    expect(term.written.join("")).toEqual("add ");
++  });
++});
+diff --git a/src/tests/ordering.test.ts b/src/tests/ordering.test.ts
+new file mode 100644
+index 0000000..d2503e2
+--- /dev/null
++++ b/src/tests/ordering.test.ts
+@@ -0,0 +1,187 @@
++// Copyright (c) Microsoft Corporation.
++// Licensed under the MIT License.
++
++import fs from "node:fs";
++import path from "node:path";
++
++import { loadFrecency, recordCommand, recordAcceptance, rankingBoost, recencyPriority } from "../utils/frecency.js";
++import { allResourcesPath } from "../utils/constants.js";
++import { getSuggestions } from "../runtime/runtime.js";
++import { unpackResources } from "../utils/node.js";
++import { getConfig } from "../utils/config.js";
++import { Shell } from "../utils/shell.js";
++
++const frecencyPath = path.join(allResourcesPath, "frecency.jsonl");
++
++// These write to the real ~/.inshellisense/frecency.jsonl, so preserve whatever
++// is there — the developer running the suite is very likely also a user.
++let saved: string | undefined;
++
++beforeAll(() => {
++  try {
++    saved = fs.readFileSync(frecencyPath, "utf-8");
++  } catch {
++    saved = undefined;
++  }
++});
++
++afterAll(() => {
++  if (saved != null) fs.writeFileSync(frecencyPath, saved);
++  else fs.rmSync(frecencyPath, { force: true });
++});
++
++beforeEach(async () => {
++  fs.rmSync(frecencyPath, { force: true });
++  await loadFrecency(true);
++});
++
++const flush = () => new Promise((r) => setTimeout(r, 20));
++
++describe("frecency ranking", () => {
++  it("gives no boost to a command never run", () => {
++    expect(rankingBoost(["git"], "rebase", "/repo")).toEqual(0);
++  });
++
++  it("boosts a command that was run", () => {
++    recordCommand("git checkout main", "/repo");
++    expect(rankingBoost(["git"], "checkout", "/repo")).toBeGreaterThan(0);
++  });
++
++  it("weights the directory it was run in above elsewhere", () => {
++    recordCommand("git checkout main", "/repo-a");
++    expect(rankingBoost(["git"], "checkout", "/repo-a")).toBeGreaterThan(rankingBoost(["git"], "checkout", "/repo-b"));
++  });
++
++  it("never exceeds the cap, however heavily used", () => {
++    for (let i = 0; i < 500; i++) recordCommand("git status", "/repo");
++    expect(rankingBoost(["git"], "status", "/repo")).toBeLessThanOrEqual(25);
++  });
++
++  it("decays with age", async () => {
++    const old = Date.now() - 60 * 86_400_000; // ~4 half-lives
++    fs.mkdirSync(allResourcesPath, { recursive: true });
++    fs.writeFileSync(
++      frecencyPath,
++      [JSON.stringify({ k: "git stale", d: "/repo", t: old, c: 8 }), JSON.stringify({ k: "git fresh", d: "/repo", t: Date.now(), c: 8 })].join("\n") + "\n",
++    );
++    await loadFrecency(true);
++
++    expect(rankingBoost(["git"], "fresh", "/repo")).toBeGreaterThan(rankingBoost(["git"], "stale", "/repo"));
++  });
++
++  it("is inert when disabled", async () => {
++    recordCommand("git status", "/repo");
++    await loadFrecency(false);
++    expect(rankingBoost(["git"], "status", "/repo")).toEqual(0);
++  });
++});
++
++describe("learning from acceptance", () => {
++  it("boosts a suggestion that was accepted but never executed", () => {
++    expect(rankingBoost(["git"], "cherry-pick", "/repo")).toEqual(0);
++    recordAcceptance(["git"], "cherry-pick", "/repo");
++    expect(rankingBoost(["git"], "cherry-pick", "/repo")).toBeGreaterThan(0);
++  });
++
++  it("counts an acceptance for less than an execution", () => {
++    recordAcceptance(["git"], "accepted", "/repo");
++    recordCommand("git executed", "/repo");
++    expect(rankingBoost(["git"], "executed", "/repo")).toBeGreaterThan(rankingBoost(["git"], "accepted", "/repo"));
++  });
++
++  it("persists across a reload", async () => {
++    recordAcceptance(["git"], "bisect", "/repo");
++    await flush();
++    await loadFrecency(true);
++    expect(rankingBoost(["git"], "bisect", "/repo")).toBeGreaterThan(0);
++  });
++
++  it("ignores an empty candidate", () => {
++    recordAcceptance(["git"], "", "/repo");
++    expect(rankingBoost(["git"], "", "/repo")).toEqual(0);
++  });
++});
++
++describe("ranking through the real suggestion pipeline", () => {
++  // Regression guard. rankSuggestions used to build its key from acceptedTokens,
++  // which the recursion seeds as [] — so it looked up "rebase" while
++  // recordCommand had stored "git rebase", and the boost was dead for every
++  // subcommand. Testing rankingBoost alone did not catch it; only going through
++  // getSuggestions does.
++  beforeAll(async () => await unpackResources());
++
++  const names = async (cmd: string) => ((await getSuggestions(cmd, process.cwd(), Shell.Bash))?.suggestions ?? []).map((s) => s.name);
++
++  it("lifts a subcommand that was run, at the first level", async () => {
++    getConfig().sortMethod = "frecency";
++    const before = await names("git ");
++    expect(before[0]).not.toEqual("rebase");
++
++    recordCommand("git rebase --continue", process.cwd());
++    expect((await names("git "))[0]).toEqual("rebase");
++  });
++
++  it("lifts an option that was run, at a deeper level", async () => {
++    getConfig().sortMethod = "frecency";
++    recordCommand("git rebase --continue", process.cwd());
++    const after = await names("git rebase ");
++    expect(after.indexOf("--continue")).toBeGreaterThanOrEqual(0);
++    expect(after.indexOf("--continue")).toBeLessThan(after.indexOf("--onto"));
++  });
++
++  it("leaves order untouched under sortMethod = none", async () => {
++    recordCommand("git rebase --continue", process.cwd());
++    getConfig().sortMethod = "none";
++    expect((await names("git "))[0]).not.toEqual("rebase");
++  });
++
++  it("sorts by name under sortMethod = alphabetical", async () => {
++    recordCommand("git rebase --continue", process.cwd());
++    getConfig().sortMethod = "alphabetical";
++    const result = await names("git ");
++    expect(result).toEqual([...result].sort((a, b) => a.localeCompare(b)));
++  });
++
++  afterAll(() => {
++    getConfig().sortMethod = "frecency";
++  });
++});
++
++describe("recency ordering (Amazon Q's model)", () => {
++  it("leaves an unused suggestion at its spec priority", () => {
++    expect(recencyPriority(["git"], "rebase", "/repo", 50)).toEqual(50);
++  });
++
++  it("promotes anything used to 75, per Q's updatePriorities", () => {
++    recordCommand("git checkout main", "/repo");
++    expect(recencyPriority(["git"], "checkout", "/repo", 50)).toBeGreaterThanOrEqual(75);
++  });
++
++  it("lifts a low-priority option above an unused mid-priority one", () => {
++    recordCommand("git --verbose", "/repo");
++    // Options start at 45, below the 50 spec default.
++    expect(recencyPriority(["git"], "--verbose", "/repo", 45)).toBeLessThan(50);
++  });
++
++  it("does not demote something already above the band", () => {
++    recordCommand("git generated", "/repo");
++    expect(recencyPriority(["git"], "generated", "/repo", 90)).toBeGreaterThanOrEqual(90);
++  });
++
++  it("ignores directory, unlike frecency — Q keys on the command alone", () => {
++    recordCommand("git checkout main", "/repo-a");
++    expect(recencyPriority(["git"], "checkout", "/repo-b", 50)).toEqual(recencyPriority(["git"], "checkout", "/repo-a", 50));
++  });
++
++  it("never boosts the parent directory entry", () => {
++    recordCommand("cd ../", "/repo");
++    expect(recencyPriority(["cd"], "../", "/repo", 50)).toEqual(50);
++  });
++
++  it("orders two used suggestions by which was used last", async () => {
++    recordCommand("git older", "/repo");
++    await new Promise((r) => setTimeout(r, 5));
++    recordCommand("git newer", "/repo");
++    expect(recencyPriority(["git"], "newer", "/repo", 50)).toBeGreaterThan(recencyPriority(["git"], "older", "/repo", 50));
++  });
++});
+diff --git a/src/ui/suggestionManager.ts b/src/ui/suggestionManager.ts
+index a492d8d..90a69e9 100644
+--- a/src/ui/suggestionManager.ts
++++ b/src/ui/suggestionManager.ts
+@@ -8,15 +8,42 @@ import { wcswidth } from "../utils/unicode.js";
+ import chalk from "chalk";
+ import { Shell } from "../utils/shell.js";
+ import log from "../utils/log.js";
+-import { getConfig } from "../utils/config.js";
++import { getConfig, type Binding, type KeyMode } from "../utils/config.js";
+ import { calculateReplacement, applyReplacement, type ReplacementAction } from "../runtime/replacement.js";
+ import { getCommandCacheKey } from "../runtime/parser.js";
++import { recordAcceptance } from "../utils/frecency.js";
+ import { initializeRuntime } from "../runtime/initialize.js";
+ 
+ type SuggestionRuntime = Pick<Awaited<ReturnType<typeof initializeRuntime>>, "getSuggestions"> &
+   Partial<Pick<Awaited<ReturnType<typeof initializeRuntime>>, "clearTransientSuggestionState">>;
+ 
+-const getMaxSuggestions = () => getConfig().maxSuggestions ?? 5;
++/**
++ * Runtime override from increaseSize/decreaseSize, applied on top of the
++ * configured value for this session only.
++ *
++ * Module-level rather than instance state because getMaxLines() is a free
++ * function the renderer calls to size its viewport patch — if the two disagreed
++ * about the row count the menu would be clipped or leave residue behind.
++ */
++let sizeOverride: number | undefined;
++const MIN_SIZE = 1;
++const MAX_SIZE = 20;
++
++const getMaxSuggestions = () => sizeOverride ?? getConfig().maxSuggestions ?? 5;
++
++/** Returns true if the size actually changed, so a no-op keypress isn't swallowed. */
++const resizeSuggestions = (delta: number): boolean => {
++  const next = Math.min(MAX_SIZE, Math.max(MIN_SIZE, getMaxSuggestions() + delta));
++  if (next === getMaxSuggestions()) return false;
++  sizeOverride = next;
++  return true;
++};
++
++/** Test seam — module state would otherwise leak between cases. */
++export const resetSizeOverride = () => {
++  sizeOverride = undefined;
++};
++
+ const suggestionWidth = 40;
+ const descriptionWidth = 30;
+ const descriptionHeight = 5;
+@@ -31,6 +58,29 @@ type KeyPress = {
+   name: string;
+   ctrl: boolean;
+   shift: boolean;
++  /** Alt/Option, surfaced by readline for ESC-prefixed sequences. */
++  meta?: boolean;
++};
++
++/** True when a keypress matches a configured binding, modifiers included. */
++const matches = (press: KeyPress, binding: Binding | undefined): boolean =>
++  binding != null && press.name === binding.key && press.shift === !!binding.shift && press.ctrl === !!binding.control && !!press.meta === !!binding.meta;
++
++/**
++ * The longest prefix shared by every candidate, or "" when they diverge
++ * immediately. Case-sensitive on purpose: inserting a differently-cased prefix
++ * than the user typed would silently rewrite their input.
++ */
++const commonPrefix = (names: string[]): string => {
++  if (names.length === 0) return "";
++  let prefix = names[0];
++  for (const name of names.slice(1)) {
++    let i = 0;
++    while (i < prefix.length && i < name.length && prefix[i] === name[i]) i++;
++    prefix = prefix.slice(0, i);
++    if (prefix.length === 0) break;
++  }
++  return prefix;
+ };
+ 
+ export class SuggestionManager {
+@@ -55,6 +105,12 @@ export class SuggestionManager {
+    */
+   #dismissed: boolean = false;
+   #reopenRequested: boolean = false;
++  /**
++   * Description panel suppressed by toggleDescription. Per-session and per-manager
++   * rather than config, because it is a "get this out of my way for a moment"
++   * gesture, not a preference.
++   */
++  #descriptionHidden: boolean = false;
+   #abortController?: AbortController;
+   #runtime?: Promise<SuggestionRuntime>;
+   #requestVersion = 0;
+@@ -192,7 +248,10 @@ export class SuggestionManager {
+         if (active) {
+           // One span across gutter, icon and label: the selection is a solid bar,
+           // and dimming the icon against systemBlue would just look muddy.
+-          return chalk.bgHex(activeBackground).hex(activeForeground).bold(prefix + label);
++          return chalk
++            .bgHex(activeBackground)
++            .hex(activeForeground)
++            .bold(prefix + label);
+         }
+         return chalk.hex(iconColor)(prefix) + chalk.hex(foreground)(label);
+       }),
+@@ -242,7 +301,7 @@ export class SuggestionManager {
+     const page = Math.min(Math.floor(this.#activeSuggestionIdx / maxSuggestions) + 1, Math.floor(suggestions.length / maxSuggestions) + 1);
+     const pagedSuggestions = suggestions.filter((_, idx) => idx < page * maxSuggestions && idx >= (page - 1) * maxSuggestions);
+     const activePagedSuggestionIndex = this.#activeSuggestionIdx % maxSuggestions;
+-    const activeDescription = pagedSuggestions.at(activePagedSuggestionIndex)?.description || argumentDescription || "";
++    const activeDescription = this.#descriptionHidden ? "" : pagedSuggestions.at(activePagedSuggestionIndex)?.description || argumentDescription || "";
+     const { swapDescription, padding } = this._calculatePadding(activeDescription, cursorX);
+ 
+     if (suggestions.length <= this.#activeSuggestionIdx) {
+@@ -292,18 +351,83 @@ export class SuggestionManager {
+     return calculateReplacement(this.#suggestBlob.activeToken, suggestion);
+   }
+ 
+-  #isAcceptKey(name: string, shift: boolean, ctrl: boolean): boolean {
++  /**
++   * Which accept mode, if any, this keypress requests.
++   *
++   * Tab/Enter/Right each carry their own mode (Amazon Q's per-key model), so
++   * "ignore" is expressible per key rather than only as a global off switch.
++   */
++  #acceptMode(press: KeyPress): KeyMode | undefined {
+     const config = getConfig();
+-    const { key, shift: acceptShift, control: acceptCtrl } = config.bindings.acceptSuggestion;
+-    if (name == key && shift == !!acceptShift && ctrl == !!acceptCtrl) return true;
+-    if (shift || ctrl) return false;
+-    if (config.acceptOnEnter && name == "return") return true;
+-    if (config.acceptOnRightArrow && name == "right") {
++    const { keys } = config;
++
++    if (matches(press, config.bindings.acceptSuggestion)) return keys.tab;
++    // Enter and Right are not rebindable — they are the *shell's* keys that we
++    // optionally borrow, which is why they get a mode instead of a binding.
++    if (press.shift || press.ctrl || press.meta) return undefined;
++    if (press.name === "return") return keys.enter;
++    if (press.name === "right") {
+       // Only at end of line. Mid-line, right arrow must keep moving the cursor —
+       // hijacking it there would make the line uneditable.
+-      return this.#term.getCommandState().cursorTerminated === true;
++      return this.#term.getCommandState().cursorTerminated === true ? keys.rightArrow : undefined;
+     }
+-    return false;
++    return undefined;
++  }
++
++  /**
++   * Absolute index selected by alt+1..alt+9, or undefined if this isn't one.
++   *
++   * Numbered against the visible page, not the whole result set — the digits map
++   * to what you can see, so alt+2 always means the second row on screen.
++   */
++  #selectByNumber(press: KeyPress): number | undefined {
++    if (getConfig().selectSuggestionModifier !== "alt") return undefined;
++    if (!press.meta || press.ctrl || !this.#suggestBlob) return undefined;
++    if (!/^[1-9]$/.test(press.name)) return undefined;
++
++    const max = getMaxSuggestions();
++    const pageStart = Math.floor(this.#activeSuggestionIdx / max) * max;
++    const index = pageStart + (Number(press.name) - 1);
++    return index < this.#suggestBlob.suggestions.length && index - pageStart < max ? index : undefined;
++  }
++
++  /**
++   * The text every candidate shares beyond what has been typed, as a replacement.
++   *
++   * Returns undefined when the prefix adds nothing — the caller then falls back to
++   * inserting the selection, which is what makes "insertOrPrefix" behave like a
++   * shell: narrow while it can, commit once it can't.
++   */
++  #commonPrefixAcceptance(): ReplacementAction | undefined {
++    if (!this.#suggestBlob) return undefined;
++    const { suggestions, activeToken } = this.#suggestBlob;
++    if (suggestions.length < 2) return undefined;
++
++    const prefix = commonPrefix(suggestions.map((s) => s.name));
++    const typed = activeToken != null && !activeToken.complete ? activeToken.token : "";
++    if (prefix.length <= typed.length) return undefined;
++
++    // Built directly rather than via calculateReplacement, which appends a
++    // trailing space to commit a completed token. A shared prefix is by
++    // definition not committed — the point is to leave the cursor mid-token so
++    // the user keeps typing.
++    return { backspaceCount: typed.length === 0 ? 0 : activeToken!.tokenLength, insertText: prefix };
++  }
++
++  /**
++   * Learn from the acceptance, mirroring Q's updateAutocompleteIndexFromUserInsert.
++   *
++   * The prefix is derived from the live command line rather than the parser's
++   * token list, which the manager never receives. Whitespace splitting matches
++   * how recordCommand builds its keys, so both signals land on the same entries.
++   */
++  #recordAccepted(name: string): void {
++    const commandText = this.#term.getCommandState().commandText ?? "";
++    const tokens = commandText.split(/\s+/).filter(Boolean);
++    // A trailing space means the typed tokens are all complete and the suggestion
++    // starts a new one; otherwise the last token is the partial being replaced.
++    const prefix = /\s$/.test(commandText) ? tokens : tokens.slice(0, -1);
++    recordAcceptance(prefix, name, this.#term.cwd);
+   }
+ 
+   update(keyPress: KeyPress, allowBindings = true): boolean {
+@@ -312,9 +436,25 @@ export class SuggestionManager {
+     // Resolved up front because Enter is now overloaded: when it is going to accept
+     // a suggestion it must NOT clear the command, or it would wipe the very line the
+     // acceptance is about to edit.
+-    const acceptance = allowBindings && this.#isAcceptKey(name, shift, ctrl) ? this.#pendingAcceptance() : undefined;
+-
+-    if (name == "return" && acceptance == null) {
++    //
++    // insertOrPrefix narrows to the shared prefix while the candidates still
++    // disagree, and only commits to the selection once they don't — so an
++    // ambiguous Tab behaves like the shell's own completion rather than silently
++    // picking the first match.
++    const mode = allowBindings ? this.#acceptMode(keyPress) : undefined;
++    const acceptance =
++      mode == null || mode === "ignore" ? undefined : (mode === "insertOrPrefix" ? this.#commonPrefixAcceptance() : undefined) ?? this.#pendingAcceptance();
++    // A shared-prefix insert leaves the token open, so it must not be recorded as
++    // a chosen suggestion.
++    const acceptedName =
++      mode === "insertOrPrefix" && this.#commonPrefixAcceptance() != null ? undefined : this.#suggestBlob?.suggestions.at(this.#activeSuggestionIdx)?.name;
++
++    // executeSelected is bound to alt+Enter by default, which readline reports as
++    // name "return" — so without this it would trip the clear-on-Enter branch
++    // below and wipe the very line it is about to complete.
++    const pendingExecute = allowBindings && matches(keyPress, getConfig().bindings.executeSelected) ? this.#pendingAcceptance() : undefined;
++
++    if (name == "return" && acceptance == null && pendingExecute == null) {
+       this.#term.clearCommand(); // clear the current command on enter
+     }
+ 
+@@ -354,24 +494,44 @@ export class SuggestionManager {
+     if (!allowBindings || !this.#suggestBlob) {
+       return false;
+     }
+-    const {
+-      dismissSuggestions: { key: dismissKey, shift: dismissShift, control: dismissCtrl },
+-      nextSuggestion: { key: nextKey, shift: nextShift, control: nextCtrl },
+-      previousSuggestion: { key: prevKey, shift: prevShift, control: prevCtrl },
+-    } = getConfig().bindings;
++    const config = getConfig();
++    const b = config.bindings;
++    const selected = this.#selectByNumber(keyPress);
+ 
+-    if (name == dismissKey && shift == !!dismissShift && ctrl == !!dismissCtrl) {
++    if (matches(keyPress, b.dismissSuggestions)) {
+       this.#suggestBlob = undefined;
+       this.#hideSuggestions = true;
+       this.#dismissed = true;
+-    } else if (name == prevKey && shift == !!prevShift && ctrl == !!prevCtrl) {
++    } else if (matches(keyPress, b.previousSuggestion)) {
+       this.#activeSuggestionIdx = Math.max(0, this.#activeSuggestionIdx - 1);
+-    } else if (name == nextKey && shift == !!nextShift && ctrl == !!nextCtrl) {
++    } else if (matches(keyPress, b.nextSuggestion)) {
+       this.#activeSuggestionIdx = Math.min(this.#activeSuggestionIdx + 1, (this.#suggestBlob?.suggestions.length ?? 1) - 1);
++    } else if (matches(keyPress, b.toggleDescription)) {
++      this.#descriptionHidden = !this.#descriptionHidden;
++    } else if (matches(keyPress, b.increaseSize) || matches(keyPress, b.decreaseSize)) {
++      // Swallowed even when already at the limit, so a held key can't leak digits
++      // of escape sequence into the line once the menu stops growing.
++      resizeSuggestions(matches(keyPress, b.increaseSize) ? 1 : -1);
++    } else if (matches(keyPress, b.insertCommonPrefix)) {
++      const prefix = this.#commonPrefixAcceptance();
++      if (prefix == null) return false;
++      this.#term.write(applyReplacement(prefix));
++    } else if (selected != null) {
++      // Jump straight to the Nth visible row and take it — Q's selectSuggestion1..10.
++      this.#activeSuggestionIdx = selected;
++      const chosen = this.#pendingAcceptance();
++      if (chosen == null) return false;
++      this.#recordAccepted(this.#suggestBlob.suggestions[selected].name);
++      this.#term.write(applyReplacement(chosen));
++    } else if (pendingExecute != null) {
++      if (acceptedName) this.#recordAccepted(acceptedName);
++      // Newline after the insert: one keystroke to complete and run.
++      this.#term.write(applyReplacement(pendingExecute) + "\r");
+     } else if (acceptance != null) {
+-      // Covers tab, Enter and right arrow alike — see #isAcceptKey. When there is
++      // Covers tab, Enter and right arrow alike — see #acceptMode. When there is
+       // nothing to accept, acceptance is undefined and the key falls through to the
+       // shell, so Enter still submits and right arrow still moves the cursor.
++      if (acceptedName) this.#recordAccepted(acceptedName);
+       this.#term.write(applyReplacement(acceptance));
+     } else if (name == "return" || (name == "c" && ctrl)) {
+       this.#term.clearCommand();
+diff --git a/src/utils/config.ts b/src/utils/config.ts
+index cf3a5fc..cfdeaf7 100644
+--- a/src/utils/config.ts
++++ b/src/utils/config.ts
+@@ -13,12 +13,38 @@ import { allResourcesPath } from "./constants.js";
+ const Ajv = _Ajv as unknown as typeof _Ajv.default;
+ const ajv = new Ajv();
+ 
+-type Binding = {
++export type Binding = {
+   shift?: boolean;
+   control?: boolean;
++  /**
++   * Alt/Option. Terminals send these as ESC-prefixed sequences, which readline
++   * reports as `meta`. Only alt+letter, alt+digit and alt+return survive that
++   * round trip with a usable key name — alt+punctuation arrives nameless, and
++   * alt+[ is indistinguishable from the start of a CSI escape. The defaults below
++   * stay inside the usable set for that reason.
++   */
++  meta?: boolean;
+   key: string;
+ };
+ 
++/**
++ * How an accept key behaves when the menu is open. Mirrors Amazon Q's per-key
++ * binding modes, which are strictly more expressive than a boolean: "ignore" lets
++ * the key fall through to the shell untouched, which a boolean can only express
++ * by disabling the feature entirely.
++ */
++export type KeyMode = "insert" | "insertOrPrefix" | "ignore";
++
++/**
++ * How suggestions are ordered.
++ *
++ * - frecency     count x recency, 14-day half-life, same-directory hits weighted 4x
++ * - recency      Amazon Q's model: last-used only, no decay, no directory scope
++ * - alphabetical purely by name, ignoring both usage and spec priority
++ * - none         spec-declared priority only
++ */
++export type SortMethod = "frecency" | "recency" | "alphabetical" | "none";
++
+ /**
+  * "auto" picks codicon when the terminal can actually render the glyphs and
+  * unicode otherwise, so the menu never renders a column of tofu.
+@@ -66,10 +92,33 @@ type Config = {
+     previousSuggestion: Binding;
+     dismissSuggestions: Binding;
+     acceptSuggestion: Binding;
++    /** Insert the longest prefix common to every suggestion — classic shell completion. */
++    insertCommonPrefix: Binding;
++    /** Accept the highlighted suggestion and run the line in one keystroke. */
++    executeSelected: Binding;
++    /** Show/hide the description panel without closing the menu. */
++    toggleDescription: Binding;
++    /** Grow/shrink the visible suggestion count for this session. */
++    increaseSize: Binding;
++    decreaseSize: Binding;
++  };
++  /**
++   * Modifier for jump-to-Nth-suggestion (Q's selectSuggestion1..10). "off"
++   * disables it. Only "alt" is offered: ctrl+digit produces no distinct sequence
++   * in a terminal, and bare digits are ordinary input.
++   */
++  selectSuggestionModifier: "alt" | "off";
++  /** Per-key accept behaviour. See KeyMode. */
++  keys: {
++    tab: KeyMode;
++    enter: KeyMode;
++    rightArrow: KeyMode;
+   };
+-  /** Enter accepts the highlighted suggestion instead of submitting the command. */
++  /** See SortMethod. */
++  sortMethod: SortMethod;
++  /** @deprecated superseded by `keys.enter`; still honoured for existing configs. */
+   acceptOnEnter: boolean;
+-  /** Right arrow accepts, but only with the cursor at end of line. */
++  /** @deprecated superseded by `keys.rightArrow`. */
+   acceptOnRightArrow: boolean;
+   theme: Theme;
+   specs: {
+@@ -88,11 +137,14 @@ const bindingSchema: JSONSchemaType<Binding> = {
+   properties: {
+     shift: { type: "boolean", nullable: true },
+     control: { type: "boolean", nullable: true },
++    meta: { type: "boolean", nullable: true },
+     key: { type: "string" },
+   },
+   required: ["key"],
+ };
+ 
++const keyModeSchema = { type: "string", nullable: true, enum: ["insert", "insertOrPrefix", "ignore"] };
++
+ const specPathsSchema: JSONSchemaType<string[]> = {
+   type: "array",
+   items: { type: "string" },
+@@ -111,8 +163,22 @@ const configSchema = {
+         previousSuggestion: bindingSchema,
+         dismissSuggestions: bindingSchema,
+         acceptSuggestion: bindingSchema,
++        insertCommonPrefix: bindingSchema,
++        executeSelected: bindingSchema,
++        toggleDescription: bindingSchema,
++        increaseSize: bindingSchema,
++        decreaseSize: bindingSchema,
+       },
++      additionalProperties: false,
++    },
++    selectSuggestionModifier: { type: "string", nullable: true, enum: ["alt", "off"] },
++    keys: {
++      type: "object",
++      nullable: true,
++      properties: { tab: keyModeSchema, enter: keyModeSchema, rightArrow: keyModeSchema },
++      additionalProperties: false,
+     },
++    sortMethod: { type: "string", nullable: true, enum: ["frecency", "recency", "alphabetical", "none"] },
+     specs: {
+       type: "object",
+       nullable: true,
+@@ -189,7 +255,22 @@ let globalConfig: Config = {
+     previousSuggestion: { key: "up" },
+     acceptSuggestion: { key: "tab" },
+     dismissSuggestions: { key: "escape" },
++    // alt+letter throughout: these only bind while the menu is open, so the
++    // readline meanings they shadow (alt+d kill-word, and so on) stay reachable
++    // whenever there is nothing to complete.
++    insertCommonPrefix: { key: "i", meta: true },
++    executeSelected: { key: "return", meta: true },
++    toggleDescription: { key: "d", meta: true },
++    increaseSize: { key: "l", meta: true }, // l for larger — alt+= has no key name
++    decreaseSize: { key: "s", meta: true }, // s for smaller
+   },
++  selectSuggestionModifier: "alt",
++  keys: {
++    tab: "insert",
++    enter: "insert",
++    rightArrow: "insert",
++  },
++  sortMethod: "frecency",
+   specs: {
+     path: [],
+   },
+@@ -236,6 +317,11 @@ export const loadConfig = async (program: Command) => {
+           nextSuggestion: config?.bindings?.nextSuggestion ?? globalConfig.bindings.nextSuggestion,
+           previousSuggestion: config?.bindings?.previousSuggestion ?? globalConfig.bindings.previousSuggestion,
+           acceptSuggestion: config?.bindings?.acceptSuggestion ?? globalConfig.bindings.acceptSuggestion,
++          insertCommonPrefix: config?.bindings?.insertCommonPrefix ?? globalConfig.bindings.insertCommonPrefix,
++          executeSelected: config?.bindings?.executeSelected ?? globalConfig.bindings.executeSelected,
++          toggleDescription: config?.bindings?.toggleDescription ?? globalConfig.bindings.toggleDescription,
++          increaseSize: config?.bindings?.increaseSize ?? globalConfig.bindings.increaseSize,
++          decreaseSize: config?.bindings?.decreaseSize ?? globalConfig.bindings.decreaseSize,
+           dismissSuggestions: config?.bindings?.dismissSuggestions ?? globalConfig.bindings.dismissSuggestions,
+         },
+         specs: {
+@@ -247,6 +333,16 @@ export const loadConfig = async (program: Command) => {
+         useFrecency: config?.useFrecency ?? true,
+         acceptOnEnter: config?.acceptOnEnter ?? true,
+         acceptOnRightArrow: config?.acceptOnRightArrow ?? true,
++        selectSuggestionModifier: config?.selectSuggestionModifier ?? globalConfig.selectSuggestionModifier,
++        // useFrecency predates sortMethod and only ever meant on/off. An explicit
++        // sortMethod wins; `useFrecency = false` still means "no usage ranking".
++        sortMethod: config?.sortMethod ?? (config?.useFrecency === false ? "none" : globalConfig.sortMethod),
++        keys: {
++          // The booleans said accept-or-nothing. "ignore" is the false case.
++          tab: config?.keys?.tab ?? globalConfig.keys.tab,
++          enter: config?.keys?.enter ?? (config?.acceptOnEnter === false ? "ignore" : globalConfig.keys.enter),
++          rightArrow: config?.keys?.rightArrow ?? (config?.acceptOnRightArrow === false ? "ignore" : globalConfig.keys.rightArrow),
++        },
+         // Per-key fallback so overriding one colour doesn't blank the rest.
+         theme: {
+           border: config?.theme?.border ?? globalConfig.theme.border,
+diff --git a/src/utils/frecency.ts b/src/utils/frecency.ts
+index 37ff4d3330bb5caa76c20ba391fd5fbd18bb2b82..91656b1aaebe8a7be8631171b03bb4f82133d5dc 100644
+GIT binary patch
+delta 1928
+zcmaJ>&2A$_5I%uc7Lg#BRl<cLhmaq~PJqBF!K^}9c5^_=qOA6Uv}w<j?Iz>yp}Qx}
+zpxrg^Fu;W)2d+rG2TuSO?z{m9zUuLqWQ91`vS+%#s``HFulIj^@XPk{thcq*qAhyN
+zdNdAXholUtB;h=8x-%%kj<I2<<gnukL%tY|*avM*ha6`r=u4(x<qltQQs53*!(AW>
+z=+Q)dV+}o|jFmH<hR#k%8_!N4JdS3w@{p!nAE@8gK=Qsr)3Hv*q&<Z(3!o3qnh`tl
+zdSp~ae}4NNmA0T{(KIPa>?F@vDxj}at{Qx4b3p?R0hckP4$>nX+gV|PHlz8-$|OuG
+z&{$<d^b}%Yny@KIr790J)q;c~9+xtfS`#UfX%ici_qGUfw}u_yEf`6!b>+z^G^0F?
+z^=LMhA9ENVhfzr=RF;);OuFo~5|9z-==k{F>DiOV_fGCVIHNx8cJ~ikt+{?*aAKVd
+zi|#Qo6(D(`Bb|ewRHrKNIjNy=Fjki`c9@kpnmf-O5B1fVy<p?d8~M(FlUNYME>{k?
+zmL9(2smKNBs0en>G@qE1uRepgk5Kg_>f5D9Ces&@6c>9to>K(^J%qH5Jxnvhv=|i>
+z(FK=LP-(w$AZnr|cm|3IP3Yw+$SF~8z=^_~WGrRMi7l?n0dVbc3Er()<g46biki&2
+zr=#SSI9+6~zF+BA+49N~J$)*Es_CkJUtX<VT7CDeZg6_Cv3b}c(nH!nuicEzD2%D!
+zhZNP%udi31EVZjI+e^!xn^NIYW!ks@>+#=hU;WTtZ+9p;xOs`5RnOnJ^GeMFO`Q&0
+z{r2hyF9Yn^Ve8ke<>OnkM*Aja&;}l02Vpxjw2sa_2L7C3$rOHB!^~`wa%~~-5e*d#
+zJ1jDa)Wl#k0-ri<QC73x*gO!&FR~w9I#x4epD(Z3Of-SEIgDUs6TmMY?su9H!p>6)
+zdV>9-COKKTxyO6&(Z=)L?%o}oPF1-{1IOwDxkKGr<1l47U;)YoO29ha&Z5yL7SV{4
+zN$OPUyYwk%dcY1Ql@KwmrbU7)u#iAzdZGhXmuw(eAh1sgCzT!fHFW%SAuPpzsRlBv
+zT9Qv}&hdETx-f%JbE}PPO~JLpVdNfl;>xlxXdTFjO*s?5Ae&N8(9z|5Q_?At2PW1~
+zxK^i0-~G%Eu;M@jHkQfC1ME@QE{=gfq&&OA^T<JCdzB$a9Z(ZDjO05mUX;=%c8HXr
+z_E(sRRGw$TqbOKT$L!+P?zLV_iEuHuLJ1RX{JSZtpH@1p4gjN1%4+-e>fWW*Sas9%
+zka|574Nwa_$8A=a$YB~u^o)!Tz(V!M%9|%QA{PU-*6sGzHX&XpoQPkSz`CP(elz6*
+zwvG6D6p8ANIBZm}t**~D?{=HFO<dn@9{eBVz>1an*d=r59_{Tu+1<VI5yTg|qL2Hu
+fzf0@ub)Q`wO8Te|>(gEN+NK)#U@=DXC`S1oHNufL
+
+delta 12
+TcmbR3@z!L6w$SDk;!Yd@BZma8
+
+-- 
+2.51.0
+

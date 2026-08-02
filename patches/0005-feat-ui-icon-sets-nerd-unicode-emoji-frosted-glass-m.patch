@@ -1,0 +1,1311 @@
+From 0960951a07b9d7cecc9aa98382349e58be7c8674 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <hello@noury.ch>
+Date: Sun, 2 Aug 2026 12:14:04 +0300
+Subject: [PATCH 05/13] feat(ui): icon sets (nerd/unicode/emoji) + frosted
+ glass menu styling
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Replaces the emoji icon column with real icons. Nerd Fonts are how a terminal
+gets FontAwesome/Devicons/Codicons, so the default 'auto' resolves to those when
+a patched font is installed and to single-cell geometric symbols otherwise —
+never tofu, never the ragged column emoji caused (they are double-width, and the
+variation-selector ones are measured inconsistently across terminals).
+
+- theme.icons: auto | nerd | unicode | emoji | none, with IS_ICONS to override
+  for a session. useNerdFont kept as a shorthand for existing rc files.
+- Icons split into runtime/icons.ts: suggestion.ts sits in an import cycle, and
+  the const export replacing the hoisted enum hit the temporal dead zone there.
+- Icon column dimmed on unselected rows; rows composed per-segment so display
+  width is measured before ANSI is applied.
+- Two-tone border (lit top-left, shaded bottom-right) plus theme.surface, which
+  defaults to 'clear' so the terminal's own transparency/blur is the frost.
+- specs table now additionalProperties:false — a root key written below the
+  [specs] header is TOML-scoped into it and was validating fine while being
+  silently ignored, which is how maxSuggestions=10 sat dead.
+- is doctor reports the resolved icon set and Nerd Font detection.
+
+---
+ jest.config.cjs                               |   6 +
+ src/runtime/icons.ts                          | 176 ++++++++++++++++++
+ src/runtime/suggestion.ts                     |  84 +--------
+ .../__snapshots__/runtime.test.ts.snap        | 104 +++++------
+ src/tests/runtime/icons.test.ts               |  95 ++++++++++
+ src/tests/runtime/runtime.test.ts             |   6 +-
+ src/ui/suggestionManager.ts                   |  41 ++--
+ src/ui/ui-doctor.ts                           |  27 +++
+ src/ui/utils.ts                               |  36 +++-
+ src/utils/config.ts                           |  55 +++++-
+ src/utils/nerdfont.ts                         |  65 +++++++
+ 11 files changed, 538 insertions(+), 157 deletions(-)
+ create mode 100644 src/runtime/icons.ts
+ create mode 100644 src/tests/runtime/icons.test.ts
+ create mode 100644 src/utils/nerdfont.ts
+
+diff --git a/jest.config.cjs b/jest.config.cjs
+index 4ce97c3..1dd9820 100644
+--- a/jest.config.cjs
++++ b/jest.config.cjs
+@@ -1,6 +1,12 @@
+ // Copyright (c) Microsoft Corporation.
+ // Licensed under the MIT License.
+ 
++// Snapshots contain suggestion icons, and the default icon set is auto-detected
++// from the installed fonts — so without pinning it, snapshots would pass or fail
++// depending on whether the machine happens to have a Nerd Font installed.
++// Inherited by the worker processes.
++process.env.IS_ICONS ??= "unicode";
++
+ /** @type {import('ts-jest').JestConfigWithTsJest} */
+ module.exports = {
+   // [...]
+diff --git a/src/runtime/icons.ts b/src/runtime/icons.ts
+new file mode 100644
+index 0000000..041b6f1
+--- /dev/null
++++ b/src/runtime/icons.ts
+@@ -0,0 +1,176 @@
++// Copyright (c) Microsoft Corporation.
++// Licensed under the MIT License.
++
++// Lives apart from suggestion.ts so that importing an icon doesn't drag in the
++// generator/runtime graph — suggestion.ts sits in an import cycle, and a `const`
++// export read from inside that cycle hits the temporal dead zone. (The enum this
++// replaced was hoisted, so the cycle never bit before.)
++
++import { getConfig, type IconStyle } from "../utils/config.js";
++import { hasNerdFont } from "../utils/nerdfont.js";
++
++type IconKey = "File" | "Folder" | "Subcommand" | "Option" | "Argument" | "Mixin" | "Shortcut" | "Special" | "Default";
++type IconSet = Record<IconKey, string>;
++
++/**
++ * Nerd Font glyphs (FontAwesome + Codicons + Devicons, private use area). Every
++ * one is single-cell, so the icon column can't shove the labels sideways the way
++ * the emoji set did — emoji are double-width, and the ones with a variation
++ * selector (🏝️) are inconsistently measured across terminals.
++ */
++const nerdIcons: IconSet = {
++  File: "", // nf-fa-file
++  Folder: "", // nf-fa-folder
++  Subcommand: "", // nf-fa-cog
++  Option: "", // nf-fa-wrench
++  Argument: "", // nf-fa-sliders
++  Mixin: "", // nf-fa-link
++  Shortcut: "", // nf-fa-bolt
++  Special: "", // nf-fa-star
++  Default: "", // nf-fa-circle
++};
++
++/**
++ * Geometric symbols that render in essentially any monospace font. The fallback
++ * when no Nerd Font is installed: monochrome and single-cell like the real icon
++ * set, so the menu keeps its shape either way.
++ */
++const unicodeIcons: IconSet = {
++  File: "▪",
++  Folder: "▸",
++  Subcommand: "◆",
++  Option: "⁃",
++  Argument: "◇",
++  Mixin: "⬡",
++  // ↯ rather than the more obvious ⚡, which is double-width and would be the one
++  // glyph in the set that pushes its label a cell out of line.
++  Shortcut: "↯",
++  Special: "★",
++  Default: "○",
++};
++
++/** Upstream's set, kept selectable — some people do prefer the colour. */
++const emojiIcons: IconSet = {
++  File: "📄",
++  Folder: "📁",
++  Subcommand: "📦",
++  Option: "🔗",
++  Argument: "💲",
++  Mixin: "🏝️",
++  Shortcut: "🔥",
++  Special: "⭐",
++  Default: "📀",
++};
++
++const noIcons: IconSet = { File: "", Folder: "", Subcommand: "", Option: "", Argument: "", Mixin: "", Shortcut: "", Special: "", Default: "" };
++
++const ICON_STYLES = ["nerd", "unicode", "emoji", "none"] as const;
++
++export const resolveIconStyle = (): Exclude<IconStyle, "auto"> => {
++  // Env override wins over the rc file: it makes the choice deterministic for
++  // tests, and lets `IS_ICONS=emoji is` try a set without editing config.
++  const override = process.env.IS_ICONS as Exclude<IconStyle, "auto"> | undefined;
++  if (override && (ICON_STYLES as readonly string[]).includes(override)) return override;
++
++  const configured = getConfig().theme.icons;
++  if (configured !== "auto") return configured;
++  return hasNerdFont() ? "nerd" : "unicode";
++};
++
++const activeIconSet = (): IconSet => {
++  switch (resolveIconStyle()) {
++    case "nerd":
++      return nerdIcons;
++    case "emoji":
++      return emojiIcons;
++    case "none":
++      return noIcons;
++    default:
++      return unicodeIcons;
++  }
++};
++
++/**
++ * Reads like the enum it replaced (`SuggestionIcons.Folder`) but resolves against
++ * whichever set is active, so callers and tests never hardcode one style.
++ */
++export const SuggestionIcons = new Proxy({} as IconSet, {
++  get: (_, key: string) => activeIconSet()[key as IconKey] ?? "",
++}) as IconSet;
++
++export const NerdFontIcons = {
++  alert: "\udb80\udc27",
++  android: "\ue70e",
++  apple: "\ue711",
++  asterisk: "\uf069",
++  aws: "\ue7ad",
++  azure: "\ue754",
++  box: "\uf1b2",
++  carrot: "\uef3b",
++  characters: "\udb82\udf34",
++  commandkey: "\udb81\ude33",
++  commit: "\ue729",
++  cpu: "\uf4bc",
++  database: "\ue706",
++  discord: "\uf1ff",
++  docker: "\ue7b0",
++  firebase: "\ue787",
++  flag: "\udb80\udd4f",
++  gcloud: "\udb84\uddf6",
++  git: "\ue702",
++  github: "\ue709",
++  gitlab: "\ue7eb",
++  gradle: "\ue7f2",
++  heroku: "\ue77b",
++  invite: "\udb83\udebb",
++  kubernetes: "\ue81d",
++  netlify: "\ue83c",
++  node: "\ued0d",
++  npm: "\ued0e",
++  slack: "\ue8a4",
++  string: "\udb84\udc21",
++  twitter: "\uf099",
++  vercel: "\ue8d3",
++  yarn: "\ue8ec",
++};
++
++export const getIcon = (icon: string | undefined, suggestionType: Fig.SuggestionType | undefined): string => {
++  const style = resolveIconStyle();
++  if (style === "none") return "";
++
++  // A spec-supplied literal glyph. Honoured except under "unicode", where the
++  // whole point is that nothing outside the basic monospace repertoire is drawn
++  // — a spec's stray 🍺 would be the one double-width cell in an otherwise
++  // aligned column.
++  // eslint-disable-next-line no-control-regex
++  if (icon && /[^\u0000-\u00ff]/.test(icon) && style !== "unicode") {
++    return icon;
++  }
++  if (icon && icon.startsWith("fig://icon?type=") && style === "nerd") {
++    const iconType = icon.split("fig://icon?type=")[1].toLowerCase();
++    const iconUtf = NerdFontIcons[iconType as keyof typeof NerdFontIcons];
++    if (iconUtf != null && iconUtf !== "") {
++      return iconUtf;
++    }
++  }
++
++  switch (suggestionType) {
++    case "arg":
++      return SuggestionIcons.Argument;
++    case "file":
++      return SuggestionIcons.File;
++    case "folder":
++      return SuggestionIcons.Folder;
++    case "option":
++      return SuggestionIcons.Option;
++    case "subcommand":
++      return SuggestionIcons.Subcommand;
++    case "mixin":
++      return SuggestionIcons.Mixin;
++    case "shortcut":
++      return SuggestionIcons.Shortcut;
++    case "special":
++      return SuggestionIcons.Special;
++  }
++  return SuggestionIcons.Default;
++};
+diff --git a/src/runtime/suggestion.ts b/src/runtime/suggestion.ts
+index 5f3701b..0dfd3f3 100644
+--- a/src/runtime/suggestion.ts
++++ b/src/runtime/suggestion.ts
+@@ -13,87 +13,9 @@ import { escapePath } from "./utils.js";
+ import { addPathSeparator, endsWithPathSeparator, getPathDirname, removePathSeparator, Shell } from "../utils/shell.js";
+ import { getConfig } from "../utils/config.js";
+ import { rankingBoost } from "../utils/frecency.js";
+-
+-export enum SuggestionIcons {
+-  File = "📄",
+-  Folder = "📁",
+-  Subcommand = "📦",
+-  Option = "🔗",
+-  Argument = "💲",
+-  Mixin = "🏝️",
+-  Shortcut = "🔥",
+-  Special = "⭐",
+-  Default = "📀",
+-}
+-export const NerdFontIcons = {
+-  alert: "\udb80\udc27",
+-  android: "\ue70e",
+-  apple: "\ue711",
+-  asterisk: "\uf069",
+-  aws: "\ue7ad",
+-  azure: "\ue754",
+-  box: "\uf1b2",
+-  carrot: "\uef3b",
+-  characters: "\udb82\udf34",
+-  commandkey: "\udb81\ude33",
+-  commit: "\ue729",
+-  cpu: "\uf4bc",
+-  database: "\ue706",
+-  discord: "\uf1ff",
+-  docker: "\ue7b0",
+-  firebase: "\ue787",
+-  flag: "\udb80\udd4f",
+-  gcloud: "\udb84\uddf6",
+-  git: "\ue702",
+-  github: "\ue709",
+-  gitlab: "\ue7eb",
+-  gradle: "\ue7f2",
+-  heroku: "\ue77b",
+-  invite: "\udb83\udebb",
+-  kubernetes: "\ue81d",
+-  netlify: "\ue83c",
+-  node: "\ued0d",
+-  npm: "\ued0e",
+-  slack: "\ue8a4",
+-  string: "\udb84\udc21",
+-  twitter: "\uf099",
+-  vercel: "\ue8d3",
+-  yarn: "\ue8ec",
+-};
+-
+-const getIcon = (icon: string | undefined, suggestionType: Fig.SuggestionType | undefined): string => {
+-  // eslint-disable-next-line no-control-regex
+-  if (icon && /[^\u0000-\u00ff]/.test(icon)) {
+-    return icon;
+-  }
+-  if (icon && icon.startsWith("fig://icon?type=") && getConfig().useNerdFont) {
+-    const iconType = icon.split("fig://icon?type=")[1].toLowerCase();
+-    const iconUtf = NerdFontIcons[iconType as keyof typeof NerdFontIcons];
+-    if (iconUtf != null && iconUtf !== "") {
+-      return iconUtf;
+-    }
+-  }
+-
+-  switch (suggestionType) {
+-    case "arg":
+-      return SuggestionIcons.Argument;
+-    case "file":
+-      return SuggestionIcons.File;
+-    case "folder":
+-      return SuggestionIcons.Folder;
+-    case "option":
+-      return SuggestionIcons.Option;
+-    case "subcommand":
+-      return SuggestionIcons.Subcommand;
+-    case "mixin":
+-      return SuggestionIcons.Mixin;
+-    case "shortcut":
+-      return SuggestionIcons.Shortcut;
+-    case "special":
+-      return SuggestionIcons.Special;
+-  }
+-  return SuggestionIcons.Default;
+-};
++// Re-exported for the many call sites (and tests) that reach for icons via this module.
++export { SuggestionIcons, NerdFontIcons, getIcon, resolveIconStyle } from "./icons.js";
++import { getIcon } from "./icons.js";
+ 
+ const getLong = (suggestion: Fig.SingleOrArray<string>): string => {
+   return suggestion instanceof Array ? suggestion.reduce((p, c) => (p.length > c.length ? p : c)) : suggestion;
+diff --git a/src/tests/runtime/__snapshots__/runtime.test.ts.snap b/src/tests/runtime/__snapshots__/runtime.test.ts.snap
+index 907f5dc..3bf4ea7 100644
+--- a/src/tests/runtime/__snapshots__/runtime.test.ts.snap
++++ b/src/tests/runtime/__snapshots__/runtime.test.ts.snap
+@@ -15,7 +15,7 @@ exports[`parseCommand alreadyUsedOption 1`] = `
+       ],
+       "description": "Display system information for bug report",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--bug-report",
+       "priority": 50,
+@@ -42,7 +42,7 @@ exports[`parseCommand command 1`] = `
+       ],
+       "description": "Add file contents to the staging area",
+       "hidden": undefined,
+-      "icon": "📦",
++      "icon": "◆",
+       "insertValue": undefined,
+       "name": "stage",
+       "priority": 50,
+@@ -54,7 +54,7 @@ exports[`parseCommand command 1`] = `
+       ],
+       "description": "Show the working tree status",
+       "hidden": undefined,
+-      "icon": "📦",
++      "icon": "◆",
+       "insertValue": undefined,
+       "name": "status",
+       "priority": 50,
+@@ -66,7 +66,7 @@ exports[`parseCommand command 1`] = `
+       ],
+       "description": "Temporarily stores all the modified tracked files",
+       "hidden": undefined,
+-      "icon": "📦",
++      "icon": "◆",
+       "insertValue": undefined,
+       "name": "stash",
+       "priority": 50,
+@@ -91,7 +91,7 @@ exports[`parseCommand completePrefixFilter 1`] = `
+       ],
+       "description": "Show the working tree status",
+       "hidden": undefined,
+-      "icon": "📦",
++      "icon": "◆",
+       "insertValue": undefined,
+       "name": "status",
+       "priority": 50,
+@@ -111,7 +111,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Defines the path where the artifact server stores uploads and retrieves downloads from. If not specified the artifact server will not start",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--artifact-server-path",
+       "priority": 45,
+@@ -123,7 +123,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Defines the port where the artifact server listens (will only bind to localhost)",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--artifact-server-port",
+       "priority": 45,
+@@ -135,7 +135,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Architecture which should be used to run containers, e.g.: linux/amd64. If not specified, will use host default architecture. Requires Docker server API Version 1.41+. Ignored on earlier Docker server platforms",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--container-architecture",
+       "priority": 45,
+@@ -147,7 +147,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Path to Docker daemon socket which will be mounted to containers",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--container-daemon-socket",
+       "priority": 45,
+@@ -160,7 +160,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Working directory",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--directory",
+       "priority": 45,
+@@ -173,7 +173,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Dryrun mode",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--dryrun",
+       "priority": 45,
+@@ -185,7 +185,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Environment file to read and use as env in the containers",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--env-file",
+       "priority": 45,
+@@ -197,7 +197,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "GitHub instance to use. Don't use this if you are not using GitHub Enterprise Server",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--github-instance",
+       "priority": 45,
+@@ -209,7 +209,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "NOT RECOMMENDED! Doesn't hide secrets while printing logs",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--insecure-secrets",
+       "priority": 45,
+@@ -221,7 +221,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Output logs in json format",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--json",
+       "priority": 45,
+@@ -233,7 +233,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Flag to disable running workflows from subdirectories of specified path in '--workflows'/'-W' flag",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--no-recurse",
+       "priority": 45,
+@@ -245,7 +245,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Do not skip actions/checkout",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--no-skip-checkout",
+       "priority": 45,
+@@ -258,7 +258,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Disable logging of output from steps",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--quiet",
+       "priority": 45,
+@@ -270,7 +270,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "File with list of secrets to read from (e.g. --secret-file .secrets)",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--secret-file",
+       "priority": 45,
+@@ -283,7 +283,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Verbose output",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--verbose",
+       "priority": 45,
+@@ -296,7 +296,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Path to workflow file(s)",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--workflows",
+       "priority": 45,
+@@ -309,7 +309,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Display help",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--help",
+       "priority": 45,
+@@ -321,7 +321,7 @@ exports[`parseCommand completedOptionWithArg 1`] = `
+       ],
+       "description": "Disable completion descriptions",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--no-descriptions",
+       "priority": 45,
+@@ -348,7 +348,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Print a newline between matches in different files. Enabled by default",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--nobreak",
+       "priority": 50,
+@@ -360,7 +360,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't print color codes in results",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--nocolor",
+       "priority": 50,
+@@ -372,7 +372,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't print file names",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--nofilename",
+       "priority": 50,
+@@ -384,7 +384,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't follow symlinks",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--nofollow",
+       "priority": 50,
+@@ -396,7 +396,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Refrains from lumping matches in the same file together, and instead places the filename at the start of each match line",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--nogroup",
+       "priority": 50,
+@@ -408,7 +408,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't print filenames above matching contents",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--noheading",
+       "priority": 50,
+@@ -420,7 +420,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't use of memory-mapped I/O. Defaults to true on platforms where mmap() is faster than read(). (All but macOS.)",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--nommap",
+       "priority": 50,
+@@ -432,7 +432,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't match regexes across newlines",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--nomultiline",
+       "priority": 50,
+@@ -445,7 +445,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't recurse into directories",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--norecurse",
+       "priority": 50,
+@@ -457,7 +457,7 @@ exports[`parseCommand exclusiveOnOption 1`] = `
+       ],
+       "description": "Don't print line numbers",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--nonumbers",
+       "priority": 50,
+@@ -482,7 +482,7 @@ exports[`parseCommand fullyTypedSuggestion 1`] = `
+       ],
+       "description": "Display whiteouts when scanning directories.  (-S) flag)",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "-W",
+       "priority": 50,
+@@ -494,7 +494,7 @@ exports[`parseCommand fullyTypedSuggestion 1`] = `
+       ],
+       "description": "Force raw printing of non-printable characters.  This is the default when output is not to a terminal",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "-w",
+       "priority": 50,
+@@ -519,7 +519,7 @@ exports[`parseCommand generatorUsingPartialInput 1`] = `
+       ],
+       "description": "This package provides the core Types and Attribute definitions for the WebJobs SDK. For more information, please visit https://go.microsoft.com/fwlink/?linkid=2279708.",
+       "hidden": undefined,
+-      "icon": "📀",
++      "icon": "○",
+       "insertValue": "Microsoft.Azure.WebJobs.Core",
+       "name": "Microsoft.Azure.WebJobs.Core",
+       "priority": 60,
+@@ -539,7 +539,7 @@ exports[`parseCommand noArgsArgumentGiven 1`] = `
+       ],
+       "description": "Static analyzer report output format",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--analyzer-output",
+       "priority": 45,
+@@ -551,7 +551,7 @@ exports[`parseCommand noArgsArgumentGiven 1`] = `
+       ],
+       "description": "Run the static analyzer",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "--analyze",
+       "priority": 45,
+@@ -563,7 +563,7 @@ exports[`parseCommand noArgsArgumentGiven 1`] = `
+       ],
+       "description": "Emit ARC errors even if the migrator can fix them",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "-arcmt-migrate-emit-errors",
+       "priority": 45,
+@@ -591,7 +591,7 @@ exports[`parseCommand optionsSuggestedAfterVariadicArg 1`] = `
+       ],
+       "description": undefined,
+       "hidden": undefined,
+-      "icon": "📄",
++      "icon": "▪",
+       "insertValue": "package-lock.json",
+       "name": "package-lock.json",
+       "priority": 55,
+@@ -603,7 +603,7 @@ exports[`parseCommand optionsSuggestedAfterVariadicArg 1`] = `
+       ],
+       "description": "Follow all symbolic links to final target and list the file or directory the link references rather than the link itself.  This option cancels the -P option",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "-L",
+       "priority": 50,
+@@ -615,7 +615,7 @@ exports[`parseCommand optionsSuggestedAfterVariadicArg 1`] = `
+       ],
+       "description": "(The lowercase letter \`\`ell''.)  List in long format.  (See below.)  A total sum for all the file sizes is output on a line before the long listing",
+       "hidden": undefined,
+-      "icon": "🔗",
++      "icon": "⁃",
+       "insertValue": undefined,
+       "name": "-l",
+       "priority": 50,
+@@ -640,7 +640,7 @@ exports[`parseCommand partialPrefixFilter 1`] = `
+       ],
+       "description": "Add file contents to the staging area",
+       "hidden": undefined,
+-      "icon": "📦",
++      "icon": "◆",
+       "insertValue": undefined,
+       "name": "stage",
+       "priority": 50,
+@@ -652,7 +652,7 @@ exports[`parseCommand partialPrefixFilter 1`] = `
+       ],
+       "description": "Show the working tree status",
+       "hidden": undefined,
+-      "icon": "📦",
++      "icon": "◆",
+       "insertValue": undefined,
+       "name": "status",
+       "priority": 50,
+@@ -664,7 +664,7 @@ exports[`parseCommand partialPrefixFilter 1`] = `
+       ],
+       "description": "Temporarily stores all the modified tracked files",
+       "hidden": undefined,
+-      "icon": "📦",
++      "icon": "◆",
+       "insertValue": undefined,
+       "name": "stash",
+       "priority": 50,
+@@ -691,7 +691,7 @@ exports[`parseCommand pathNestedSuggestion 1`] = `
+       ],
+       "description": undefined,
+       "hidden": undefined,
+-      "icon": "📁",
++      "icon": "▸",
+       "insertValue": ".github/workflows/",
+       "name": "workflows",
+       "priority": 55,
+@@ -716,7 +716,7 @@ exports[`parseCommand pathSuggestion 1`] = `
+       ],
+       "description": undefined,
+       "hidden": undefined,
+-      "icon": "📁",
++      "icon": "▸",
+       "insertValue": "shell/",
+       "name": "shell",
+       "priority": 55,
+@@ -743,7 +743,7 @@ exports[`parseCommand pathWithFileFilteredSuggestion 1`] = `
+       ],
+       "description": undefined,
+       "hidden": undefined,
+-      "icon": "📄",
++      "icon": "▪",
+       "insertValue": "shell/shellIntegration.bash",
+       "name": "shellIntegration.bash",
+       "priority": 55,
+@@ -770,7 +770,7 @@ exports[`parseCommand pathWithFileSuggestion 1`] = `
+       ],
+       "description": undefined,
+       "hidden": undefined,
+-      "icon": "📄",
++      "icon": "▪",
+       "insertValue": "shell/bash-preexec.sh",
+       "name": "bash-preexec.sh",
+       "priority": 55,
+@@ -795,7 +795,7 @@ exports[`parseCommand provideFileSuggestion 1`] = `
+       ],
+       "description": undefined,
+       "hidden": undefined,
+-      "icon": "📄",
++      "icon": "▪",
+       "insertValue": "README.md",
+       "name": "README.md",
+       "priority": 55,
+@@ -820,7 +820,7 @@ exports[`parseCommand provideFolderSuggestion 1`] = `
+       ],
+       "description": undefined,
+       "hidden": undefined,
+-      "icon": "📁",
++      "icon": "▸",
+       "insertValue": "src/",
+       "name": "src",
+       "priority": 55,
+@@ -849,7 +849,7 @@ exports[`parseCommand providedSuggestion 1`] = `
+       ],
+       "description": undefined,
+       "hidden": undefined,
+-      "icon": "📀",
++      "icon": "○",
+       "insertValue": undefined,
+       "name": "zsh",
+       "priority": 50,
+diff --git a/src/tests/runtime/icons.test.ts b/src/tests/runtime/icons.test.ts
+new file mode 100644
+index 0000000..7876013
+--- /dev/null
++++ b/src/tests/runtime/icons.test.ts
+@@ -0,0 +1,95 @@
++// Copyright (c) Microsoft Corporation.
++// Licensed under the MIT License.
++
++import { getIcon, resolveIconStyle, SuggestionIcons } from "../../runtime/icons.js";
++import { wcswidth } from "../../utils/unicode.js";
++
++const withStyle = <T>(style: string, fn: () => T): T => {
++  const previous = process.env.IS_ICONS;
++  process.env.IS_ICONS = style;
++  try {
++    return fn();
++  } finally {
++    if (previous == null) delete process.env.IS_ICONS;
++    else process.env.IS_ICONS = previous;
++  }
++};
++
++const ALL_KEYS = ["File", "Folder", "Subcommand", "Option", "Argument", "Mixin", "Shortcut", "Special", "Default"] as const;
++
++afterEach(() => {
++  process.env.IS_ICONS = "unicode";
++});
++
++describe("icon style resolution", () => {
++  it("honours an explicit style over auto-detection", () => {
++    (["nerd", "unicode", "emoji", "none"] as const).forEach((style) => {
++      expect(withStyle(style, resolveIconStyle)).toEqual(style);
++    });
++  });
++
++  it("ignores an unrecognised style rather than rendering nothing", () => {
++    expect(withStyle("fontawesome", resolveIconStyle)).not.toEqual("fontawesome");
++  });
++});
++
++describe("icon sets", () => {
++  // The renderer reserves the icon column by measured width. A double-width glyph
++  // in a set therefore shunts that one row's label a cell out of line — the exact
++  // ragged column the emoji default was replaced to fix.
++  it.each(["nerd", "unicode"])("renders every %s icon in a single cell", (style) => {
++    withStyle(style, () => {
++      ALL_KEYS.forEach((key) => {
++        expect([key, wcswidth(SuggestionIcons[key])]).toEqual([key, 1]);
++      });
++    });
++  });
++
++  it('emits nothing at all for "none"', () => {
++    withStyle("none", () => {
++      ALL_KEYS.forEach((key) => expect(SuggestionIcons[key]).toEqual(""));
++      expect(getIcon(undefined, "folder")).toEqual("");
++      // Even a spec that hands us an explicit glyph stays suppressed.
++      expect(getIcon("🍺", "arg")).toEqual("");
++    });
++  });
++
++  it("maps suggestion types to distinct glyphs", () => {
++    withStyle("unicode", () => {
++      const glyphs = [getIcon(undefined, "file"), getIcon(undefined, "folder"), getIcon(undefined, "subcommand"), getIcon(undefined, "option")];
++      expect(new Set(glyphs).size).toEqual(glyphs.length);
++    });
++  });
++
++  it("falls back to the default glyph for an unknown type", () => {
++    withStyle("unicode", () => {
++      expect(getIcon(undefined, undefined)).toEqual(SuggestionIcons.Default);
++    });
++  });
++});
++
++describe("spec-supplied icons", () => {
++  it("passes a literal glyph through under nerd and emoji", () => {
++    expect(withStyle("nerd", () => getIcon("🍺", "arg"))).toEqual("🍺");
++    expect(withStyle("emoji", () => getIcon("🍺", "arg"))).toEqual("🍺");
++  });
++
++  it("suppresses a literal glyph under unicode, where alignment is the point", () => {
++    withStyle("unicode", () => {
++      expect(getIcon("🍺", "arg")).toEqual(SuggestionIcons.Argument);
++    });
++  });
++
++  it("resolves fig:// icon urls to nerd glyphs only under nerd", () => {
++    const url = "fig://icon?type=git";
++    expect(withStyle("nerd", () => getIcon(url, "subcommand"))).toEqual("");
++    // Without a patched font that codepoint is tofu, so fall back to the type icon.
++    expect(withStyle("unicode", () => getIcon(url, "subcommand"))).toEqual(withStyle("unicode", () => SuggestionIcons.Subcommand));
++  });
++
++  it("falls back to the type icon for an unmapped fig:// icon url", () => {
++    withStyle("nerd", () => {
++      expect(getIcon("fig://icon?type=notathing", "option")).toEqual(SuggestionIcons.Option);
++    });
++  });
++});
+diff --git a/src/tests/runtime/runtime.test.ts b/src/tests/runtime/runtime.test.ts
+index 1454330..32ef0b0 100644
+--- a/src/tests/runtime/runtime.test.ts
++++ b/src/tests/runtime/runtime.test.ts
+@@ -5,7 +5,7 @@ import fs from "node:fs";
+ 
+ import { getSuggestions } from "../../runtime/runtime.js";
+ import { Shell } from "../../utils/shell.js";
+-import { SuggestionIcons } from "../../runtime/suggestion.js";
++import { SuggestionIcons } from "../../runtime/icons.js";
+ import { unpackResources } from "../../utils/node.js";
+ 
+ const testData = [
+@@ -56,7 +56,9 @@ const subcommandSuggestionsData = [
+     platforms: ["darwin"],
+     maxSuggestions: 1,
+     expectedNames: ["mullvad-browser"],
+-    expectedIcons: ["🍺"],
++    // The brew spec supplies a literal 🍺. Whether that survives depends on the
++    // active icon style (suppressed under "unicode", which admits no double-width
++    // glyphs), so it isn't assertable here — icons.test.ts covers that directly.
+   },
+   { name: "gitStat", command: "git stat", maxSuggestions: 1, expectedNames: ["status"], expectedIcons: [SuggestionIcons.Subcommand] }, // subcommand generator
+   { name: "gitStatus", command: "git status ", expectedNames: ["demo.ts"] }, // script + post-process generator
+diff --git a/src/ui/suggestionManager.ts b/src/ui/suggestionManager.ts
+index f00df3d..a492d8d 100644
+--- a/src/ui/suggestionManager.ts
++++ b/src/ui/suggestionManager.ts
+@@ -4,6 +4,7 @@
+ import { Suggestion, SuggestionBlob } from "../runtime/model.js";
+ import type { ISTerm, ISTermPatch } from "../isterm/pty.js";
+ import { renderBox, truncateText, truncateMultilineText } from "./utils.js";
++import { wcswidth } from "../utils/unicode.js";
+ import chalk from "chalk";
+ import { Shell } from "../utils/shell.js";
+ import log from "../utils/log.js";
+@@ -151,38 +152,52 @@ export class SuggestionManager {
+     }
+   }
+ 
++  /** The subset of theme keys renderBox needs, shared by both panels. */
++  private _boxStyle() {
++    const { border, borderHighlight, surface, corners } = getConfig().theme;
++    return { border, borderHighlight, surface, corners };
++  }
++
+   private _renderArgumentDescription(description: string | undefined) {
+     if (!description) return [];
+-    const { description: descriptionColor, border, corners } = getConfig().theme;
+-    return renderBox([chalk.hex(descriptionColor)(truncateText(description, descriptionWidth - borderWidth))], descriptionWidth, border, corners);
++    const { description: descriptionColor } = getConfig().theme;
++    return renderBox([chalk.hex(descriptionColor)(truncateText(description, descriptionWidth - borderWidth))], descriptionWidth, this._boxStyle());
+   }
+ 
+   private _renderDescription(description: string | undefined) {
+     if (!description) return "";
+-    const { description: descriptionColor, border, corners } = getConfig().theme;
++    const { description: descriptionColor } = getConfig().theme;
+     return renderBox(
+       truncateMultilineText(description, descriptionWidth - borderWidth, descriptionHeight).map((line) => chalk.hex(descriptionColor)(line)),
+       descriptionWidth,
+-      border,
+-      corners,
++      this._boxStyle(),
+     );
+   }
+ 
+   private _renderSuggestions(suggestions: Suggestion[], activeSuggestionIdx: number) {
+-    const { activeBackground, activeForeground, border, pointer, corners } = getConfig().theme;
++    const { activeBackground, activeForeground, foreground, icon: iconColor, pointer } = getConfig().theme;
++    const inner = suggestionWidth - borderWidth;
+     return renderBox(
+       suggestions.map((suggestion, idx) => {
+         const active = idx == activeSuggestionIdx;
+         // A fixed-width gutter on EVERY row, not just the active one — otherwise the
+-        // pointer shifts the text sideways as the selection moves. truncateText pads
+-        // to width, so the highlight spans the full row.
+-        const gutter = active ? `${pointer} ` : "  ";
+-        const truncatedSuggestion = truncateText(`${gutter}${suggestion.icon} ${suggestion.name}`, suggestionWidth - borderWidth);
+-        return active ? chalk.bgHex(activeBackground).hex(activeForeground).bold(truncatedSuggestion) : truncatedSuggestion;
++        // pointer shifts the text sideways as the selection moves.
++        const gutter = active ? ` ${pointer} ` : "   ";
++        const icon = suggestion.icon ? `${suggestion.icon} ` : "";
++        const prefix = gutter + icon;
++        // Padded here rather than by truncating the whole row, because the row is
++        // about to be split into differently coloured segments and truncateText
++        // measures display width — ANSI codes inside would throw the count off.
++        const label = truncateText(suggestion.name, Math.max(inner - wcswidth(prefix), 0));
++        if (active) {
++          // One span across gutter, icon and label: the selection is a solid bar,
++          // and dimming the icon against systemBlue would just look muddy.
++          return chalk.bgHex(activeBackground).hex(activeForeground).bold(prefix + label);
++        }
++        return chalk.hex(iconColor)(prefix) + chalk.hex(foreground)(label);
+       }),
+       suggestionWidth,
+-      border,
+-      corners,
++      this._boxStyle(),
+     );
+   }
+ 
+diff --git a/src/ui/ui-doctor.ts b/src/ui/ui-doctor.ts
+index 4ad33a9..b568d2b 100644
+--- a/src/ui/ui-doctor.ts
++++ b/src/ui/ui-doctor.ts
+@@ -3,16 +3,43 @@
+ 
+ import chalk from "chalk";
+ import { checkLegacyConfigs, checkShellConfigPlugin, checkShellConfigs } from "../utils/shell.js";
++import { SuggestionIcons, resolveIconStyle } from "../runtime/icons.js";
++import { hasNerdFont } from "../utils/nerdfont.js";
++import { getConfig } from "../utils/config.js";
+ 
+ export const render = async () => {
+   let errors = 0;
+   errors += await renderLegacyConfigIssues();
+   errors += await renderShellPluginIssues();
+   errors += renderShellConfigIssues();
++  renderIconStyle();
+ 
+   process.exit(errors);
+ };
+ 
++/**
++ * Never an error — "no Nerd Font" is a perfectly good state that just gets the
++ * plainer icon set. Reported because a wrong-looking icon column is otherwise
++ * hard to attribute: tofu means the font isn't actually selected in the terminal,
++ * and plain shapes when you expected glyphs means detection missed.
++ */
++const renderIconStyle = (): void => {
++  const style = resolveIconStyle();
++  const sample = [SuggestionIcons.Subcommand, SuggestionIcons.Option, SuggestionIcons.File, SuggestionIcons.Folder].join(" ");
++  process.stdout.write(chalk.green("✓") + ` icons: ${chalk.bold(style)} ${style === "none" ? "" : chalk.dim(`(${sample})`)}\n`);
++
++  if (getConfig().theme.icons !== "auto") return;
++  if (hasNerdFont()) {
++    process.stdout.write(chalk.dim("  a Nerd Font is installed — if the glyphs above are blank boxes, select it as your terminal's font\n"));
++  } else {
++    process.stdout.write(
++      chalk.dim("  no Nerd Font detected; install one (e.g. ") +
++        chalk.cyan("brew install --cask font-jetbrains-mono-nerd-font") +
++        chalk.dim(") for the full icon set\n"),
++    );
++  }
++};
++
+ const renderLegacyConfigIssues = async (): Promise<number> => {
+   const shellsWithLegacyConfigs = await checkLegacyConfigs();
+   if (shellsWithLegacyConfigs.length > 0) {
+diff --git a/src/ui/utils.ts b/src/ui/utils.ts
+index c991e54..bb9898b 100644
+--- a/src/ui/utils.ts
++++ b/src/ui/utils.ts
+@@ -14,19 +14,45 @@ const CORNERS = {
+ 
+ export type BoxCorners = keyof typeof CORNERS;
+ 
+-export const renderBox = (rows: string[], width: number, borderColor?: string, corners: BoxCorners = "square"): string[] => {
++export type BoxStyle = {
++  border: string;
++  /**
++   * Top and left edge colour. Glass panels catch light on the near edge, so a
++   * two-tone frame reads as a raised translucent surface where one flat colour
++   * reads as a drawn rectangle. Falls back to `border` when unset.
++   */
++  borderHighlight?: string;
++  /** Hex tint for the body, or "clear"/undefined to let the terminal show through. */
++  surface?: string;
++  corners?: BoxCorners;
++};
++
++/** "clear" means paint no background — the terminal's own blur is the frost. */
++const fill = (surface: string | undefined) => (surface == null || surface === "clear" ? undefined : surface);
++
++export const renderBox = (rows: string[], width: number, style: BoxStyle): string[] => {
+   const result = [];
++  const { border, borderHighlight, surface, corners = "square" } = style;
++  const background = fill(surface);
+   // NB: `chalk.hex(borderColor).apply(text)` would invoke Function.prototype.apply
+   // with `text` as thisArg and NO arguments, so chalk returns an empty string and
+   // every border character disappears. Call the builder directly.
+-  const setColor = (text: string) => resetColor + (borderColor ? chalk.hex(borderColor)(text) : text);
++  const paint = (text: string, color: string) => {
++    const colored = color ? chalk.hex(color)(text) : text;
++    return resetColor + (background ? chalk.bgHex(background)(colored) : colored);
++  };
++  const lit = (text: string) => paint(text, borderHighlight ?? border);
++  const shade = (text: string) => paint(text, border);
++
+   const { tl, tr, bl, br } = CORNERS[corners] ?? CORNERS.square;
+   const edge = "─".repeat(width - 2);
+-  result.push(setColor(tl + edge + tr));
++  // Light falls from the top-left: top edge and left rail lit, bottom and right
++  // in shade. The two corners between them each take the side they sit on.
++  result.push(lit(tl + edge) + shade(tr));
+   rows.forEach((row) => {
+-    result.push(setColor("│") + row + setColor("│"));
++    result.push(lit("│") + (background ? chalk.bgHex(background)(row) : row) + shade("│"));
+   });
+-  result.push(setColor(bl + edge + br));
++  result.push(lit(bl) + shade(edge + br));
+   return result;
+ };
+ 
+diff --git a/src/utils/config.ts b/src/utils/config.ts
+index 82b28c9..edc336b 100644
+--- a/src/utils/config.ts
++++ b/src/utils/config.ts
+@@ -19,17 +19,41 @@ type Binding = {
+   key: string;
+ };
+ 
++/**
++ * "auto" picks nerd when a patched font is installed and unicode otherwise, so
++ * the menu never renders a column of tofu on a machine that can't draw glyphs.
++ */
++export type IconStyle = "auto" | "nerd" | "unicode" | "emoji" | "none";
++
+ type Theme = {
+   /** Box-drawing border colour. The engine always supported this but never set it. */
+   border: string;
++  /**
++   * Lit edge along the top/left of the box. Glass panels catch light on the near
++   * edge; a single flat border colour reads as a flat rectangle instead.
++   */
++  borderHighlight: string;
+   activeBackground: string;
+   activeForeground: string;
++  /** Unselected row text. */
++  foreground: string;
++  /** Icon column on unselected rows — dimmer than the label so names stay dominant. */
++  icon: string;
+   /** Description panel text — dimmed so the suggestion list stays dominant. */
+   description: string;
+   /** Marker in the selected row's gutter. Must be 1 cell wide to keep alignment. */
+   pointer: string;
+   /** "rounded" mimics a native macOS menu; "square" is the classic box. */
+   corners: "rounded" | "square";
++  /**
++   * Body fill. "clear" paints nothing, so the terminal shows through and the
++   * terminal's own transparency + blur becomes the menu's frosted backdrop —
++   * ANSI has no blur of its own, so this is the only real glass available. A hex
++   * value paints a flat tint instead, for opaque terminals.
++   */
++  surface: string;
++  /** Icon set. See IconStyle. */
++  icons: IconStyle;
+ };
+ 
+ type Config = {
+@@ -91,6 +115,11 @@ const configSchema = {
+       properties: {
+         path: specPathsSchema,
+       },
++      // Without this, a top-level key written *below* the [specs] header — which
++      // TOML scopes into the table, not the document root — validates fine and is
++      // then silently ignored. maxSuggestions sat dead in a generated config that
++      // way. Fail loudly instead.
++      additionalProperties: false,
+     },
+     useAliases: {
+       type: "boolean",
+@@ -127,11 +156,16 @@ const configSchema = {
+       nullable: true,
+       properties: {
+         border: { type: "string", nullable: true },
++        borderHighlight: { type: "string", nullable: true },
+         activeBackground: { type: "string", nullable: true },
+         activeForeground: { type: "string", nullable: true },
++        foreground: { type: "string", nullable: true },
++        icon: { type: "string", nullable: true },
+         description: { type: "string", nullable: true },
+         pointer: { type: "string", nullable: true },
+         corners: { type: "string", nullable: true, enum: ["rounded", "square"] },
++        surface: { type: "string", nullable: true },
++        icons: { type: "string", nullable: true, enum: ["auto", "nerd", "unicode", "emoji", "none"] },
+       },
+     },
+   },
+@@ -160,15 +194,21 @@ let globalConfig: Config = {
+   useFrecency: true,
+   acceptOnEnter: true,
+   acceptOnRightArrow: true,
+-  // Modelled on a native macOS menu: hairline border, systemBlue selection,
+-  // rounded corners, and no body fill so the terminal background shows through.
++  // Modelled on a frosted native macOS menu: hairline border lit along the top
++  // and left edge, systemBlue selection, rounded corners, and a clear body so the
++  // terminal's own transparency/blur shows through as the frost.
+   theme: {
+-    border: "#3A3A3C",
++    border: "#2C2C2E",
++    borderHighlight: "#48484A",
+     activeBackground: "#0A84FF",
+     activeForeground: "#FFFFFF",
++    foreground: "#E5E5EA",
++    icon: "#8E8E93",
+     description: "#98989D",
+-    pointer: "▸",
++    pointer: "›",
+     corners: "rounded",
++    surface: "clear",
++    icons: "auto",
+   },
+ };
+ 
+@@ -206,11 +246,18 @@ export const loadConfig = async (program: Command) => {
+         // Per-key fallback so overriding one colour doesn't blank the rest.
+         theme: {
+           border: config?.theme?.border ?? globalConfig.theme.border,
++          borderHighlight: config?.theme?.borderHighlight ?? globalConfig.theme.borderHighlight,
+           activeBackground: config?.theme?.activeBackground ?? globalConfig.theme.activeBackground,
+           activeForeground: config?.theme?.activeForeground ?? globalConfig.theme.activeForeground,
++          foreground: config?.theme?.foreground ?? globalConfig.theme.foreground,
++          icon: config?.theme?.icon ?? globalConfig.theme.icon,
+           description: config?.theme?.description ?? globalConfig.theme.description,
+           pointer: config?.theme?.pointer ?? globalConfig.theme.pointer,
+           corners: config?.theme?.corners ?? globalConfig.theme.corners,
++          surface: config?.theme?.surface ?? globalConfig.theme.surface,
++          // useNerdFont predates theme.icons and only ever gated fig:// icon URLs.
++          // Honoured as a shorthand so existing rc files keep working.
++          icons: config?.theme?.icons ?? (config?.useNerdFont ? "nerd" : globalConfig.theme.icons),
+         },
+       };
+     }
+diff --git a/src/utils/nerdfont.ts b/src/utils/nerdfont.ts
+new file mode 100644
+index 0000000..e24d784
+--- /dev/null
++++ b/src/utils/nerdfont.ts
+@@ -0,0 +1,65 @@
++// Copyright (c) Microsoft Corporation.
++// Licensed under the MIT License.
++
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++
++/**
++ * Nerd Fonts are how a terminal gets FontAwesome/Devicons/Codicons: the glyphs
++ * live in the font's private use area, so they only render if the font the
++ * terminal is configured with is a patched one. There is no way to ask a
++ * terminal which font it is using, so the best available signal is whether a
++ * patched font is installed at all — someone who installed one is essentially
++ * always using it.
++ *
++ * Wrong in one direction only: a user with a Nerd Font installed but not
++ * selected sees tofu, and sets `theme.icons = "unicode"` to opt out. The
++ * reverse (patched font in use but undetected) just means plainer icons.
++ */
++const FONT_DIRS = (): string[] => {
++  const home = os.homedir();
++  switch (process.platform) {
++    case "darwin":
++      return [path.join(home, "Library", "Fonts"), "/Library/Fonts", "/System/Library/Fonts"];
++    case "win32":
++      return [path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "Microsoft", "Windows", "Fonts"), path.join(process.env.WINDIR ?? "C:\\Windows", "Fonts")];
++    default:
++      return [path.join(home, ".local", "share", "fonts"), path.join(home, ".fonts"), "/usr/share/fonts", "/usr/local/share/fonts"];
++  }
++};
++
++// "JetBrainsMonoNerdFont-Regular.ttf", "Hack Nerd Font Mono.ttf", "MesloLGS NF.ttf"
++const NERD_FONT_FILE = /nerd[ _-]?font|\bNF\b|NerdFont/i;
++
++const scan = (dir: string, depth: number): boolean => {
++  let entries: fs.Dirent[];
++  try {
++    entries = fs.readdirSync(dir, { withFileTypes: true });
++  } catch {
++    return false;
++  }
++  for (const entry of entries) {
++    if (entry.isDirectory()) {
++      // System font trees nest a level or two (e.g. /usr/share/fonts/truetype/...).
++      if (depth > 0 && scan(path.join(dir, entry.name), depth - 1)) return true;
++    } else if (NERD_FONT_FILE.test(entry.name)) {
++      return true;
++    }
++  }
++  return false;
++};
++
++let cached: boolean | undefined;
++
++/** Cached for the process: fonts don't get installed mid-session. */
++export const hasNerdFont = (): boolean => {
++  if (cached != null) return cached;
++  cached = FONT_DIRS().some((dir) => scan(dir, 2));
++  return cached;
++};
++
++/** Test seam — also lets `is doctor` report both branches. */
++export const resetNerdFontCache = (value?: boolean): void => {
++  cached = value;
++};
+-- 
+2.51.0
+

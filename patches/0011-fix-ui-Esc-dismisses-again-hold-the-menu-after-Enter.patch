@@ -1,0 +1,408 @@
+From deed95c8fb8e6358c80adce2463a18901b9438a5 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <hello@noury.ch>
+Date: Sun, 2 Aug 2026 16:10:08 +0300
+Subject: [PATCH 11/13] fix(ui): Esc dismisses again; hold the menu after
+ Enter; lastUsed ordering
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Esc had stopped working entirely. readline reports the bare ESC byte as
+{ name: "escape", meta: true } — ESC is also the escape-sequence introducer, so
+the flag says nothing about Alt. The matches() helper added with the Alt bindings
+compared meta, so the default { key: "escape" } binding never matched and the
+dismiss branch was unreachable. meta is now ignored for escape specifically.
+
+Accepting on Enter immediately produced a new menu, so the second Enter accepted
+that instead of submitting and the line could never be run. The menu now stays
+shut until the next keystroke — a space counts. Not time-based: a timer either
+expires while you are still deciding or holds the menu back after you have
+carried on typing, and neither is the condition that matters.
+
+sortMethod gains "lastUsed": most recently used first, for every suggestion
+type. Distinct from "recency", which reproduces Q's 50-75 promotion band and so
+barely moves an option (priority 45) even once it has been used.
+
+---
+ src/index.ts                |   9 +++-
+ src/runtime/suggestion.ts   |  12 ++++-
+ src/tests/keys.test.ts      | 103 ++++++++++++++++++++++++++++++++++++
+ src/tests/ordering.test.ts  |  30 ++++++++++-
+ src/ui/suggestionManager.ts |  57 ++++++++++++++++++--
+ src/utils/config.ts         |   5 +-
+ src/utils/frecency.ts       | Bin 9243 -> 10026 bytes
+ 7 files changed, 206 insertions(+), 10 deletions(-)
+
+diff --git a/src/index.ts b/src/index.ts
+index accd16b..26c6c7d 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -43,13 +43,18 @@ Keys (while the suggestion menu is open):
+   Alt+l / Alt+s      show more / fewer suggestions
+ 
+ Suggestion order (sortMethod):
++  lastUsed           most recently used first, whatever its type
+   frecency           how often and how recently you ran it here (default)
+   recency            last used only, no decay — Amazon Q's model
+   alphabetical       by name, ignoring usage
+   none               spec-declared priority only
+ 
+-Configure both in ~/.config/inshellisense/rc.toml, under [bindings], [keys] and
+-sortMethod. Alt+letter, Alt+digit and Alt+Enter are the only Alt combinations a
++After Enter accepts a suggestion the menu stays shut until you type something —
++a space counts — so a second Enter runs the line rather than accepting whatever
++would have reopened.
++
++Configure the rest in ~/.config/inshellisense/rc.toml, under [bindings], [keys]
++and sortMethod. Alt+letter, Alt+digit and Alt+Enter are the only Alt combinations a
+ terminal reports reliably.
+ `;
+ 
+diff --git a/src/runtime/suggestion.ts b/src/runtime/suggestion.ts
+index fd9b2f4..6e03133 100644
+--- a/src/runtime/suggestion.ts
++++ b/src/runtime/suggestion.ts
+@@ -12,7 +12,7 @@ import log from "../utils/log.js";
+ import { escapePath } from "./utils.js";
+ import { addPathSeparator, endsWithPathSeparator, getPathDirname, removePathSeparator, Shell } from "../utils/shell.js";
+ import { getConfig } from "../utils/config.js";
+-import { rankingBoost, recencyPriority } from "../utils/frecency.js";
++import { rankingBoost, recencyPriority, lastUsedAt } from "../utils/frecency.js";
+ // Re-exported for the many call sites (and tests) that reach for icons via this module.
+ export { SuggestionIcons, NerdFontIcons, getIcon, resolveIconStyle } from "./icons.js";
+ import { getIcon } from "./icons.js";
+@@ -241,6 +241,16 @@ const rankSuggestions = (suggestions: Suggestion[], allTokens: CommandToken[], c
+   const prefix = allTokens.filter((t) => t.complete).map((t) => t.token);
+   const method = getConfig().sortMethod;
+ 
++  if (method === "lastUsed") {
++    // Most recently used first, then everything unused in spec order. Applied to
++    // every suggestion type — unlike "recency", which reproduces Q's promotion
++    // band and so barely moves an option (priority 45, below the 50-75 band).
++    return [...suggestions]
++      .map((s) => ({ s, at: lastUsedAt(prefix, s.name, cwd) }))
++      .sort((a, b) => b.at - a.at || b.s.priority - a.s.priority)
++      .map((entry) => entry.s);
++  }
++
+   if (method === "alphabetical") {
+     // Purely by name — priority deliberately ignored too. Keeping it as the
+     // primary key would band options (45) below subcommands (50), so the list
+diff --git a/src/tests/keys.test.ts b/src/tests/keys.test.ts
+index 26f8d53..200ff91 100644
+--- a/src/tests/keys.test.ts
++++ b/src/tests/keys.test.ts
+@@ -198,3 +198,106 @@ describe("modifiers are not confused", () => {
+     expect(term.written.join("")).toEqual("add ");
+   });
+ });
++
++describe("Esc dismisses", () => {
++  // Regression guard. readline reports the bare ESC byte as
++  // { name: "escape", meta: true }, because ESC is also the escape-sequence
++  // introducer. A modifier check that compared `meta` therefore never matched the
++  // default `{ key: "escape" }` binding, and Esc silently stopped working.
++  const escape = { name: "escape", sequence: "\u001b", ctrl: false, shift: false, meta: true };
++
++  it("handles Esc even though readline flags it as meta", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("add"), suggestion("branch")]);
++
++    expect(m.update(escape)).toBe(true);
++    expect(m.render("below", 0)).toEqual([]);
++  });
++
++  it("stays dismissed for the rest of the line", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("add")]);
++    m.update(escape);
++
++    // An ordinary keystroke must not bring it back.
++    m.update(press("x"));
++    await m.exec();
++    expect(m.render("below", 0)).toEqual([]);
++  });
++
++  it("reopens on Tab", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("add")]);
++    m.update(escape);
++
++    expect(m.update(press("tab"))).toBe(true);
++    expect(m.takeReopenRequest()).toBe(true);
++  });
++});
++
++describe("menu stays shut after Enter accepts", () => {
++  const enter = press("return");
++
++  it("suppresses the menu so the next Enter submits instead of accepting again", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("status")]);
++
++    expect(m.update(enter)).toBe(true);
++    expect(term.written.join("")).toEqual("status ");
++
++    // Reloading produces no menu, so a second Enter has nothing to accept and
++    // falls through to the shell.
++    await m.exec();
++    expect(m.render("below", 0)).toEqual([]);
++  });
++
++  it("stays shut indefinitely — no timer brings it back on its own", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("status")]);
++    m.update(enter);
++
++    for (let i = 0; i < 3; i++) {
++      await new Promise((r) => setTimeout(r, 20));
++      await m.exec();
++      expect(m.render("below", 0)).toEqual([]);
++    }
++  });
++
++  it("comes back as soon as anything is typed", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("status")]);
++    m.update(enter);
++
++    m.update(press("x"));
++    await m.exec();
++    expect(m.render("below", 0).length).toBeGreaterThan(0);
++  });
++
++  it("counts a space as typing", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("status")]);
++    m.update(enter);
++
++    m.update(press("space"));
++    await m.exec();
++    expect(m.render("below", 0).length).toBeGreaterThan(0);
++  });
++
++  it("does not suppress when Enter had nothing to accept", async () => {
++    const term = makeTerm("git status");
++    const m = await makeManager(term, [suggestion("status")], "status");
++
++    m.update(enter);
++    await m.exec();
++    expect(m.render("below", 0).length).toBeGreaterThan(0);
++  });
++
++  it("does not suppress for Alt+Enter, which is executeSelected", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("status")]);
++
++    m.update(press("return", { meta: true }));
++    await m.exec();
++    expect(m.render("below", 0).length).toBeGreaterThan(0);
++  });
++});
+diff --git a/src/tests/ordering.test.ts b/src/tests/ordering.test.ts
+index d2503e2..98f165b 100644
+--- a/src/tests/ordering.test.ts
++++ b/src/tests/ordering.test.ts
+@@ -4,7 +4,7 @@
+ import fs from "node:fs";
+ import path from "node:path";
+ 
+-import { loadFrecency, recordCommand, recordAcceptance, rankingBoost, recencyPriority } from "../utils/frecency.js";
++import { loadFrecency, recordCommand, recordAcceptance, rankingBoost, recencyPriority, lastUsedAt } from "../utils/frecency.js";
+ import { allResourcesPath } from "../utils/constants.js";
+ import { getSuggestions } from "../runtime/runtime.js";
+ import { unpackResources } from "../utils/node.js";
+@@ -147,6 +147,34 @@ describe("ranking through the real suggestion pipeline", () => {
+   });
+ });
+ 
++describe("lastUsed ordering", () => {
++  it("puts the most recently used first", async () => {
++    recordCommand("git older", "/repo");
++    await new Promise((r) => setTimeout(r, 5));
++    recordCommand("git newer", "/repo");
++    expect(lastUsedAt(["git"], "newer", "/repo")).toBeGreaterThan(lastUsedAt(["git"], "older", "/repo"));
++  });
++
++  it("reports 0 for something never used, so it sorts below anything used", () => {
++    expect(lastUsedAt(["git"], "never", "/repo")).toEqual(0);
++  });
++
++  it("counts a use from any directory — 'last used' means what it says", () => {
++    recordCommand("git checkout main", "/repo-a");
++    expect(lastUsedAt(["git"], "checkout", "/repo-b")).toBeGreaterThan(0);
++  });
++
++  it("ranks a used option ahead of an unused subcommand, unlike Q's model", async () => {
++    getConfig().sortMethod = "lastUsed";
++    recordCommand("git rebase --continue", process.cwd());
++    const result = ((await getSuggestions("git rebase ", process.cwd(), Shell.Bash))?.suggestions ?? []).map((s) => s.name);
++    // Options sit at priority 45, below the 50-75 band Q promotes within, so
++    // "recency" would barely move this one. lastUsed ignores priority entirely.
++    expect(result[0]).toEqual("--continue");
++    getConfig().sortMethod = "frecency";
++  });
++});
++
+ describe("recency ordering (Amazon Q's model)", () => {
+   it("leaves an unused suggestion at its spec priority", () => {
+     expect(recencyPriority(["git"], "rebase", "/repo", 50)).toEqual(50);
+diff --git a/src/ui/suggestionManager.ts b/src/ui/suggestionManager.ts
+index 90a69e9..7e69f24 100644
+--- a/src/ui/suggestionManager.ts
++++ b/src/ui/suggestionManager.ts
+@@ -62,9 +62,20 @@ type KeyPress = {
+   meta?: boolean;
+ };
+ 
+-/** True when a keypress matches a configured binding, modifiers included. */
+-const matches = (press: KeyPress, binding: Binding | undefined): boolean =>
+-  binding != null && press.name === binding.key && press.shift === !!binding.shift && press.ctrl === !!binding.control && !!press.meta === !!binding.meta;
++/**
++ * True when a keypress matches a configured binding, modifiers included.
++ *
++ * `meta` is deliberately ignored for Escape. ESC is both a key and the
++ * introducer for every escape sequence, so readline reports the bare ESC byte as
++ * `{ name: "escape", meta: true }` — the flag says nothing about whether Alt was
++ * held. Comparing it made the default `{ key: "escape" }` binding never match,
++ * which silently disabled dismissal entirely.
++ */
++const matches = (press: KeyPress, binding: Binding | undefined): boolean => {
++  if (binding == null || press.name !== binding.key) return false;
++  if (press.shift !== !!binding.shift || press.ctrl !== !!binding.control) return false;
++  return press.name === "escape" || !!press.meta === !!binding.meta;
++};
+ 
+ /**
+  * The longest prefix shared by every candidate, or "" when they diverge
+@@ -111,6 +122,18 @@ export class SuggestionManager {
+    * gesture, not a preference.
+    */
+   #descriptionHidden: boolean = false;
++  /**
++   * Set when Enter accepted a suggestion; keeps the menu shut until the user
++   * types something.
++   *
++   * Accepting on Enter changes the command line, which immediately produces a new
++   * menu — so the second Enter accepted *that* instead of submitting, and the line
++   * could never be run. Deliberately not time-based: a timer either expires while
++   * you are still deciding, or holds the menu back after you have carried on
++   * typing. "Until the next character" is the condition that actually matters, and
++   * a space counts.
++   */
++  #suppressUntilNextInput: boolean = false;
+   #abortController?: AbortController;
+   #runtime?: Promise<SuggestionRuntime>;
+   #requestVersion = 0;
+@@ -146,6 +169,7 @@ export class SuggestionManager {
+     this.#activeSuggestionIdx = 0;
+     this.#hideSuggestions = false;
+     this.#dismissed = false;
++    this.#suppressUntilNextInput = false;
+     if (commandCleared) {
+       try {
+         const runtime = await this._getRuntime();
+@@ -157,6 +181,18 @@ export class SuggestionManager {
+   }
+ 
+   private async _loadSuggestions(): Promise<boolean> {
++    // Checked before anything else, including the unchanged-command-key fast
++    // path: suppression must hold regardless of whether the line looks new, or
++    // accepting a suggestion that leaves the cache key equal would slip past it.
++    if (this.#suppressUntilNextInput) {
++      const changed = this.#suggestBlob != null;
++      this.#suggestBlob = undefined;
++      this.#activeSuggestionIdx = 0;
++      // #commandKey deliberately left alone, so the reload after the next
++      // keystroke still sees the line as new and refetches.
++      return changed;
++    }
++
+     const commandState = this.#term.getCommandState();
+     const commandText = commandState.commandText;
+     const commandKey = commandText ? `${this.#term.cwd}\u0000${getCommandCacheKey(commandText, this.#shell)}` : "";
+@@ -169,8 +205,10 @@ export class SuggestionManager {
+     if (!commandText) {
+       const commandCleared = this.#commandKey.length !== 0;
+       this.#commandKey = "";
+-      // Empty line means a new command is starting, so an earlier Esc no longer applies.
++      // Empty line means a new command is starting, so an earlier Esc no longer
++      // applies and neither does an accept-suppression.
+       this.#dismissed = false;
++      this.#suppressUntilNextInput = false;
+       if (commandCleared) {
+         const runtime = await this._getRuntime();
+         runtime.clearTransientSuggestionState?.();
+@@ -433,6 +471,15 @@ export class SuggestionManager {
+   update(keyPress: KeyPress, allowBindings = true): boolean {
+     const { name, shift, ctrl } = keyPress;
+ 
++    // Any key other than Enter means the user typed something, which is exactly
++    // the condition for letting the menu back.
++    if (name !== "return") this.#suppressUntilNextInput = false;
++
++    // Plain Enter only. Alt+Enter is executeSelected, and a modified Enter is
++    // somebody's own binding — neither is the accept-then-submit gesture this
++    // window exists for.
++    const isPlainEnter = name === "return" && !ctrl && !shift && !keyPress.meta;
++
+     // Resolved up front because Enter is now overloaded: when it is going to accept
+     // a suggestion it must NOT clear the command, or it would wipe the very line the
+     // acceptance is about to edit.
+@@ -533,6 +580,8 @@ export class SuggestionManager {
+       // shell, so Enter still submits and right arrow still moves the cursor.
+       if (acceptedName) this.#recordAccepted(acceptedName);
+       this.#term.write(applyReplacement(acceptance));
++      // Hold the menu shut so the next Enter reaches the shell and runs the line.
++      if (isPlainEnter) this.#suppressUntilNextInput = true;
+     } else if (name == "return" || (name == "c" && ctrl)) {
+       this.#term.clearCommand();
+       return false;
+diff --git a/src/utils/config.ts b/src/utils/config.ts
+index cfdeaf7..dd9753b 100644
+--- a/src/utils/config.ts
++++ b/src/utils/config.ts
+@@ -38,12 +38,13 @@ export type KeyMode = "insert" | "insertOrPrefix" | "ignore";
+ /**
+  * How suggestions are ordered.
+  *
++ * - lastUsed     most recently used first, whatever its type; then spec priority
+  * - frecency     count x recency, 14-day half-life, same-directory hits weighted 4x
+  * - recency      Amazon Q's model: last-used only, no decay, no directory scope
+  * - alphabetical purely by name, ignoring both usage and spec priority
+  * - none         spec-declared priority only
+  */
+-export type SortMethod = "frecency" | "recency" | "alphabetical" | "none";
++export type SortMethod = "lastUsed" | "frecency" | "recency" | "alphabetical" | "none";
+ 
+ /**
+  * "auto" picks codicon when the terminal can actually render the glyphs and
+@@ -178,7 +179,7 @@ const configSchema = {
+       properties: { tab: keyModeSchema, enter: keyModeSchema, rightArrow: keyModeSchema },
+       additionalProperties: false,
+     },
+-    sortMethod: { type: "string", nullable: true, enum: ["frecency", "recency", "alphabetical", "none"] },
++    sortMethod: { type: "string", nullable: true, enum: ["lastUsed", "frecency", "recency", "alphabetical", "none"] },
+     specs: {
+       type: "object",
+       nullable: true,
+diff --git a/src/utils/frecency.ts b/src/utils/frecency.ts
+index 91656b1aaebe8a7be8631171b03bb4f82133d5dc..3325daef92132a650e55316412553ccaf2fbc524 100644
+GIT binary patch
+delta 604
+zcmZ9Jy>8S%6om_@wn01q$&o9991|%W2(6%^2~`knW@qktMz&|nook#e(DDwU;{lLT
+zA@N336jVF`cf5oGX$pIOzH{z5UtZt7`S$yG|ISl{_>f^ubio-R%qF8ZSukaCH4@_t
+zVT(u~h#R~zw#&H6iRFUCCx;iP%JsK;ySi#tc%loJrlYK6(swg4(sucAfyqkZ-D$RI
+zq`ia6qV3bh^pG%67Bh^wMotInVxlU<flSPpy%7XKHoFX_*0Ad-=fa;oF_klK#*rd9
+z{P^@4Q|v=Wi}+TxDcT)2DP^e@y4Od+ddw7BF9*MNVx}ngXSKm)2}qa0IH^QpM;u~{
+zj&{$A;IIrEQ?Y48Xcz^Ou<1#Mn}c}dkt{|IiG%EFY{(i-7yD{ZCpw4v5^Mu!sftj^
+zZT6|BLS%YBX)a4r3$jShY3dz%(rtJ(e|iT;7B;ahkx%8TQ-h_Hrz^T1wKUii6?SOs
+z9=Vq{50Ab+V3LU=E{ynQFxNM~jvk$_o4Z=EUgNC(TT|1LJl4ri{yRT;zWVt6=kfXd
+EKag(J-T(jq
+
+delta 12
+TcmZ4GH``;wC;82c%9<<yB@P6k
+
+-- 
+2.51.0
+

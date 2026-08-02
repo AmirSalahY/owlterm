@@ -1,0 +1,294 @@
+From 0c4fc93653e3077d38cbf8582fcbbd4767cb9f32 Mon Sep 17 00:00:00 2001
+From: Amir <hello@noury.ch>
+Date: Sat, 1 Aug 2026 18:22:31 +0300
+Subject: [PATCH 04/13] fix(ui): make Esc actually dismiss, and style the menu
+ like a macOS menu
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Esc appeared not to work. It did set #hideSuggestions, but that flag is reset by
+the very next ordinary keystroke, so the menu was suppressed for exactly one
+character and then popped straight back.
+
+- Adds #dismissed, which lasts for the rest of the command line. Lifted by Tab
+  (the conventional 'complete this' request), by submitting, or once the line is
+  empty. Deliberately NOT by up/down: upstream already uses those to keep the menu
+  hidden while browsing shell history, so reusing them would give one key two
+  contradictory meanings.
+- The re-open check must NOT be gated on allowBindings: ui-root passes
+  renderer.hasVisibleSuggestions, which is false precisely because the menu is
+  dismissed, making the re-open key unreachable.
+- Re-opening also needs an explicit scheduler request. ui-root only reloads when
+  the command-state VERSION changes, and re-opening alters no screen content, so
+  term.noop() left Tab dead — the menu only returned on the following keystroke.
+  Surfaced via takeReopenRequest().
+
+Styling now follows a native macOS menu: rounded corners (renderBox takes a
+corners option), systemBlue #0A84FF selection, #3A3A3C hairline border, #98989D
+secondary text, and no body fill so the terminal background shows through.
+Row width stays a uniform 40 cells.
+
+Verified in a real PTY: menu shows, Esc closes it, it stays closed across further
+typing, and Tab brings it back immediately.
+
+---
+ src/ui/suggestionManager.ts | 69 ++++++++++++++++++++++++++++++++++---
+ src/ui/ui-root.ts           |  5 +++
+ src/ui/utils.ts             | 16 +++++++--
+ src/utils/config.ts         | 13 +++++--
+ 4 files changed, 93 insertions(+), 10 deletions(-)
+
+diff --git a/src/ui/suggestionManager.ts b/src/ui/suggestionManager.ts
+index 6969cdf..f00df3d 100644
+--- a/src/ui/suggestionManager.ts
++++ b/src/ui/suggestionManager.ts
+@@ -39,6 +39,21 @@ export class SuggestionManager {
+   #suggestBlob?: SuggestionBlob;
+   #shell: Shell;
+   #hideSuggestions: boolean = false;
++  /**
++   * Set when the user explicitly dismissed the menu (Esc), and kept set for the
++   * rest of the current command line.
++   *
++   * #hideSuggestions alone is not enough: it is reset by the very next ordinary
++   * keystroke, so Esc suppressed the menu for exactly one character and it then
++   * popped straight back — indistinguishable from Esc not working at all.
++   *
++   * Lifted by Tab (the conventional "complete this" request), by submitting, or
++   * once the line is empty. Deliberately NOT by ↑/↓: upstream uses those to keep
++   * the menu hidden while browsing shell history, so reusing them here would mean
++   * one key with two contradictory meanings.
++   */
++  #dismissed: boolean = false;
++  #reopenRequested: boolean = false;
+   #abortController?: AbortController;
+   #runtime?: Promise<SuggestionRuntime>;
+   #requestVersion = 0;
+@@ -73,6 +88,7 @@ export class SuggestionManager {
+     this.#suggestBlob = undefined;
+     this.#activeSuggestionIdx = 0;
+     this.#hideSuggestions = false;
++    this.#dismissed = false;
+     if (commandCleared) {
+       try {
+         const runtime = await this._getRuntime();
+@@ -96,12 +112,14 @@ export class SuggestionManager {
+     if (!commandText) {
+       const commandCleared = this.#commandKey.length !== 0;
+       this.#commandKey = "";
++      // Empty line means a new command is starting, so an earlier Esc no longer applies.
++      this.#dismissed = false;
+       if (commandCleared) {
+         const runtime = await this._getRuntime();
+         runtime.clearTransientSuggestionState?.();
+       }
+     }
+-    if (!commandText || this.#hideSuggestions || commandState.hasOutput) {
++    if (!commandText || this.#hideSuggestions || this.#dismissed || commandState.hasOutput) {
+       const changed = this.#suggestBlob != null || this.#activeSuggestionIdx !== 0;
+       this.#suggestBlob = undefined;
+       this.#activeSuggestionIdx = 0;
+@@ -135,21 +153,23 @@ export class SuggestionManager {
+ 
+   private _renderArgumentDescription(description: string | undefined) {
+     if (!description) return [];
+-    return renderBox([truncateText(description, descriptionWidth - borderWidth)], descriptionWidth);
++    const { description: descriptionColor, border, corners } = getConfig().theme;
++    return renderBox([chalk.hex(descriptionColor)(truncateText(description, descriptionWidth - borderWidth))], descriptionWidth, border, corners);
+   }
+ 
+   private _renderDescription(description: string | undefined) {
+     if (!description) return "";
+-    const { description: descriptionColor, border } = getConfig().theme;
++    const { description: descriptionColor, border, corners } = getConfig().theme;
+     return renderBox(
+       truncateMultilineText(description, descriptionWidth - borderWidth, descriptionHeight).map((line) => chalk.hex(descriptionColor)(line)),
+       descriptionWidth,
+       border,
++      corners,
+     );
+   }
+ 
+   private _renderSuggestions(suggestions: Suggestion[], activeSuggestionIdx: number) {
+-    const { activeBackground, activeForeground, border, pointer } = getConfig().theme;
++    const { activeBackground, activeForeground, border, pointer, corners } = getConfig().theme;
+     return renderBox(
+       suggestions.map((suggestion, idx) => {
+         const active = idx == activeSuggestionIdx;
+@@ -162,6 +182,7 @@ export class SuggestionManager {
+       }),
+       suggestionWidth,
+       border,
++      corners,
+     );
+   }
+ 
+@@ -185,6 +206,17 @@ export class SuggestionManager {
+     return await this._loadSuggestions();
+   }
+ 
++  /**
++   * True once if the last keypress re-opened a menu the user had dismissed.
++   * ui-root turns this into a scheduler request, because re-opening changes no
++   * screen content and so triggers no command-state version change of its own.
++   */
++  takeReopenRequest(): boolean {
++    const requested = this.#reopenRequested;
++    this.#reopenRequested = false;
++    return requested;
++  }
++
+   render(direction: "above" | "below", cursorX: number): ISTermPatch[] {
+     if (!this.#suggestBlob) {
+       return [];
+@@ -271,11 +303,39 @@ export class SuggestionManager {
+       this.#term.clearCommand(); // clear the current command on enter
+     }
+ 
++    // An explicit dismissal lasts for the rest of the line. Enter starts a fresh
++    // line, and Tab is the conventional "complete this" request, so both lift it.
++    // Tab is also swallowed here so it doesn't fall through to the shell's own
++    // completion while the menu is on its way back.
++    // NOT gated on allowBindings: the caller passes renderer.hasVisibleSuggestions,
++    // which is false precisely because the menu is dismissed — gating here would
++    // make the re-open key permanently unreachable.
++    let reopened = false;
++    if (this.#dismissed) {
++      const accept = getConfig().bindings.acceptSuggestion;
++      if (name == "return") {
++        this.#dismissed = false;
++      } else if (name == accept.key && shift == !!accept.shift && ctrl == !!accept.control) {
++        this.#dismissed = false;
++        this.#hideSuggestions = false;
++        reopened = true;
++      }
++    }
++
+     // if suggestions are hidden, keep them hidden until during command navigation
+     if (this.#hideSuggestions) {
+       this.#hideSuggestions = name == "up" || name == "down";
+     }
+ 
++    // Tab that re-opened a dismissed menu is fully handled, even though there is no
++    // suggestion blob yet. It needs an explicit reload request: ui-root only asks
++    // the scheduler when the command-state VERSION changes, and re-opening changes
++    // no screen content, so term.noop() alone leaves the key dead.
++    if (reopened) {
++      this.#reopenRequested = true;
++      return true;
++    }
++
+     if (!allowBindings || !this.#suggestBlob) {
+       return false;
+     }
+@@ -288,6 +348,7 @@ export class SuggestionManager {
+     if (name == dismissKey && shift == !!dismissShift && ctrl == !!dismissCtrl) {
+       this.#suggestBlob = undefined;
+       this.#hideSuggestions = true;
++      this.#dismissed = true;
+     } else if (name == prevKey && shift == !!prevShift && ctrl == !!prevCtrl) {
+       this.#activeSuggestionIdx = Math.max(0, this.#activeSuggestionIdx - 1);
+     } else if (name == nextKey && shift == !!nextShift && ctrl == !!nextCtrl) {
+diff --git a/src/ui/ui-root.ts b/src/ui/ui-root.ts
+index 03004f6..32d7119 100644
+--- a/src/ui/ui-root.ts
++++ b/src/ui/ui-root.ts
+@@ -86,6 +86,11 @@ export const render = async (program: Command, shell: Shell, underTest: boolean,
+     }
+ 
+     const inputHandled = suggestions.update(press, renderer.hasVisibleSuggestions);
++    // Re-opening a dismissed menu produces no shell echo and no screen change, so
++    // the onData path never notices; ask for the reload explicitly.
++    if (suggestions.takeReopenRequest()) {
++      suggestionScheduler.request();
++    }
+     if (renderer.hasVisibleSuggestions && inputHandled) {
+       term.noop();
+     } else if (!inputHandled) {
+diff --git a/src/ui/utils.ts b/src/ui/utils.ts
+index 4f4c9d7..c991e54 100644
+--- a/src/ui/utils.ts
++++ b/src/ui/utils.ts
+@@ -6,17 +6,27 @@ import wrapAnsi from "wrap-ansi";
+ import chalk from "chalk";
+ import { wcswidth } from "../utils/unicode.js";
+ 
+-export const renderBox = (rows: string[], width: number, borderColor?: string): string[] => {
++/** Rounded corners read as a native macOS menu; square is the classic look. */
++const CORNERS = {
++  rounded: { tl: "╭", tr: "╮", bl: "╰", br: "╯" },
++  square: { tl: "┌", tr: "┐", bl: "└", br: "┘" },
++} as const;
++
++export type BoxCorners = keyof typeof CORNERS;
++
++export const renderBox = (rows: string[], width: number, borderColor?: string, corners: BoxCorners = "square"): string[] => {
+   const result = [];
+   // NB: `chalk.hex(borderColor).apply(text)` would invoke Function.prototype.apply
+   // with `text` as thisArg and NO arguments, so chalk returns an empty string and
+   // every border character disappears. Call the builder directly.
+   const setColor = (text: string) => resetColor + (borderColor ? chalk.hex(borderColor)(text) : text);
+-  result.push(setColor("┌" + "─".repeat(width - 2) + "┐"));
++  const { tl, tr, bl, br } = CORNERS[corners] ?? CORNERS.square;
++  const edge = "─".repeat(width - 2);
++  result.push(setColor(tl + edge + tr));
+   rows.forEach((row) => {
+     result.push(setColor("│") + row + setColor("│"));
+   });
+-  result.push(setColor("└" + "─".repeat(width - 2) + "┘"));
++  result.push(setColor(bl + edge + br));
+   return result;
+ };
+ 
+diff --git a/src/utils/config.ts b/src/utils/config.ts
+index e3d1e75..82b28c9 100644
+--- a/src/utils/config.ts
++++ b/src/utils/config.ts
+@@ -28,6 +28,8 @@ type Theme = {
+   description: string;
+   /** Marker in the selected row's gutter. Must be 1 cell wide to keep alignment. */
+   pointer: string;
++  /** "rounded" mimics a native macOS menu; "square" is the classic box. */
++  corners: "rounded" | "square";
+ };
+ 
+ type Config = {
+@@ -129,6 +131,7 @@ const configSchema = {
+         activeForeground: { type: "string", nullable: true },
+         description: { type: "string", nullable: true },
+         pointer: { type: "string", nullable: true },
++        corners: { type: "string", nullable: true, enum: ["rounded", "square"] },
+       },
+     },
+   },
+@@ -157,12 +160,15 @@ let globalConfig: Config = {
+   useFrecency: true,
+   acceptOnEnter: true,
+   acceptOnRightArrow: true,
++  // Modelled on a native macOS menu: hairline border, systemBlue selection,
++  // rounded corners, and no body fill so the terminal background shows through.
+   theme: {
+-    border: "#7D56F4",
+-    activeBackground: "#7D56F4",
++    border: "#3A3A3C",
++    activeBackground: "#0A84FF",
+     activeForeground: "#FFFFFF",
+-    description: "#9CA3AF",
++    description: "#98989D",
+     pointer: "▸",
++    corners: "rounded",
+   },
+ };
+ 
+@@ -204,6 +210,7 @@ export const loadConfig = async (program: Command) => {
+           activeForeground: config?.theme?.activeForeground ?? globalConfig.theme.activeForeground,
+           description: config?.theme?.description ?? globalConfig.theme.description,
+           pointer: config?.theme?.pointer ?? globalConfig.theme.pointer,
++          corners: config?.theme?.corners ?? globalConfig.theme.corners,
+         },
+       };
+     }
+-- 
+2.51.0
+
