@@ -1,0 +1,155 @@
+From 2c31c8a8c554cd81d3ad3cffb65d2ffbba4cb1d2 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Sun, 2 Aug 2026 19:17:51 +0300
+Subject: [PATCH 17/19] fix(ui): apply type colours to whole suggestion rows
+
+---
+ src/runtime/suggestion.ts   | 23 ++++++++++++++---------
+ src/tests/colors.test.ts    | 18 +++++++++++-------
+ src/ui/suggestionManager.ts |  8 +++-----
+ 3 files changed, 28 insertions(+), 21 deletions(-)
+
+diff --git a/src/runtime/suggestion.ts b/src/runtime/suggestion.ts
+index c7a2de3..c8d9206 100644
+--- a/src/runtime/suggestion.ts
++++ b/src/runtime/suggestion.ts
+@@ -25,9 +25,14 @@ const getPathy = (type: Fig.SuggestionType | undefined): boolean => {
+   return type === "file" || type === "folder";
+ };
+ 
++const typeFromIcon = (icon: string | undefined): Fig.SuggestionType | undefined => {
++  if (icon === "fig://icon?type=command") return "subcommand";
++  return undefined;
++};
++
+ const toSuggestion = (suggestion: Fig.Suggestion, name?: string, type?: Fig.SuggestionType): Suggestion | undefined => {
+   if (suggestion.name == null) return;
+-  const resolvedType = type ?? suggestion.type;
++  const resolvedType = type ?? suggestion.type ?? typeFromIcon(suggestion.icon);
+   return {
+     name: name ?? getLong(suggestion.name),
+     description: suggestion.description,
+@@ -74,11 +79,11 @@ function filter<T extends Fig.BaseSuggestion & { name?: Fig.SingleOrArray<string
+               ? {
+                   name: matchedName,
+                   description: s.description,
+-                  icon: getIcon(s.icon, s.type ?? suggestionType),
++                  icon: getIcon(s.icon, s.type ?? suggestionType ?? typeFromIcon(s.icon)),
+                   allNames: s.name,
+                   priority: s.priority ?? 50,
+                   insertValue: s.insertValue,
+-                  type: s.type ?? suggestionType,
++                  type: s.type ?? suggestionType ?? typeFromIcon(s.icon),
+                   hidden: s.hidden,
+                 }
+               : undefined;
+@@ -87,11 +92,11 @@ function filter<T extends Fig.BaseSuggestion & { name?: Fig.SingleOrArray<string
+             ? {
+                 name: s.name,
+                 description: s.description,
+-                icon: getIcon(s.icon, s.type ?? suggestionType),
++                icon: getIcon(s.icon, s.type ?? suggestionType ?? typeFromIcon(s.icon)),
+                 allNames: [s.name],
+                 priority: s.priority ?? 50,
+                 insertValue: s.insertValue,
+-                type: s.type ?? suggestionType,
++                type: s.type ?? suggestionType ?? typeFromIcon(s.icon),
+                 hidden: s.hidden,
+               }
+             : undefined;
+@@ -107,11 +112,11 @@ function filter<T extends Fig.BaseSuggestion & { name?: Fig.SingleOrArray<string
+               ? {
+                   name: matchedName,
+                   description: s.description,
+-                  icon: getIcon(s.icon, s.type ?? suggestionType),
++                  icon: getIcon(s.icon, s.type ?? suggestionType ?? typeFromIcon(s.icon)),
+                   allNames: s.name,
+                   insertValue: s.insertValue,
+                   priority: s.priority ?? 50,
+-                  type: s.type ?? suggestionType,
++                  type: s.type ?? suggestionType ?? typeFromIcon(s.icon),
+                   hidden: s.hidden,
+                 }
+               : undefined;
+@@ -120,11 +125,11 @@ function filter<T extends Fig.BaseSuggestion & { name?: Fig.SingleOrArray<string
+             ? {
+                 name: s.name,
+                 description: s.description,
+-                icon: getIcon(s.icon, s.type ?? suggestionType),
++                icon: getIcon(s.icon, s.type ?? suggestionType ?? typeFromIcon(s.icon)),
+                 allNames: [s.name],
+                 insertValue: s.insertValue,
+                 priority: s.priority ?? 50,
+-                type: s.type ?? suggestionType,
++                type: s.type ?? suggestionType ?? typeFromIcon(s.icon),
+                 hidden: s.hidden,
+               }
+             : undefined;
+diff --git a/src/tests/colors.test.ts b/src/tests/colors.test.ts
+index 7b24604..7064390 100644
+--- a/src/tests/colors.test.ts
++++ b/src/tests/colors.test.ts
+@@ -80,10 +80,10 @@ describe("suggestion type is resolved, not just copied", () => {
+ describe("row colouring", () => {
+   // Reaching past the constructor: SuggestionManager needs a live PTY, and none
+   // of that is involved in turning a list of suggestions into styled strings.
+-  const render = async (suggestions: { name: string; type?: string }[]): Promise<string> => {
++  const render = async (suggestions: { name: string; type?: string; icon?: string }[]): Promise<string> => {
+     const { SuggestionManager } = await import("../ui/suggestionManager.js");
+     const rows = Object.create(SuggestionManager.prototype)._renderSuggestions(
+-      suggestions.map((s) => ({ ...s, icon: "", allNames: [s.name], priority: 50 })),
++      suggestions.map((s) => ({ ...s, icon: s.icon ?? "", allNames: [s.name], priority: 50 })),
+       // -1 so no row is selected: the selection bar paints one solid colour over
+       // gutter, icon and label by design, which would mask the tint under test.
+       -1,
+@@ -103,12 +103,16 @@ describe("row colouring", () => {
+     expect(output).toContain(fg(types.option));
+   });
+ 
+-  it("leaves files at the default foreground", async () => {
++  it("honours the configured file colour", async () => {
+     const { foreground, types } = getConfig().theme;
+-    // Files are deliberately uncoloured — they are the commonest row, so tinting
+-    // the baseline would leave nothing to contrast against.
+-    expect(types.file).toEqual("");
+-    expect(await render([{ name: "a.txt", type: "file" }])).toContain(fg(foreground));
++    const expected = types.file || foreground;
++    expect(await render([{ name: "a.txt", type: "file" }])).toContain(fg(expected));
++  });
++
++  it("tints the icon and label together", async () => {
++    const { types } = getConfig().theme;
++    const output = await render([{ name: "clone", type: "subcommand", icon: "◆" }]);
++    expect(output).toContain(`${fg(types.subcommand)}   ◆ clone`);
+   });
+ 
+   it("falls back to the foreground for an untyped row", async () => {
+diff --git a/src/ui/suggestionManager.ts b/src/ui/suggestionManager.ts
+index 379374b..d49ed88 100644
+--- a/src/ui/suggestionManager.ts
++++ b/src/ui/suggestionManager.ts
+@@ -269,7 +269,7 @@ export class SuggestionManager {
+   }
+ 
+   private _renderSuggestions(suggestions: Suggestion[], activeSuggestionIdx: number) {
+-    const { activeBackground, activeForeground, foreground, icon: iconColor, pointer, colorByType, types } = getConfig().theme;
++    const { activeBackground, activeForeground, foreground, pointer, colorByType, types } = getConfig().theme;
+     const inner = suggestionWidth - borderWidth;
+ 
+     /**
+@@ -304,10 +304,8 @@ export class SuggestionManager {
+             .hex(activeForeground)
+             .bold(prefix + label);
+         }
+-        // Only the label is tinted. The icon column keeps its own dim grey: the
+-        // glyph already encodes the kind by shape, and colouring both made the
+-        // row read as two competing highlights instead of one label.
+-        return chalk.hex(iconColor)(prefix) + chalk.hex(labelColor(suggestion.type))(label);
++        const color = labelColor(suggestion.type);
++        return chalk.hex(color)(prefix + label);
+       }),
+       suggestionWidth,
+       this._boxStyle(),
+-- 
+2.51.0
+

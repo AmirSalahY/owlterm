@@ -1,0 +1,342 @@
+From 0bbe16ca9ca8794fdfed889740868d96ec919870 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Sun, 2 Aug 2026 19:26:32 +0300
+Subject: [PATCH 18/19] feat(ui): own command-line highlighting
+
+---
+ shell/shellIntegration-rc.zsh              |   5 +-
+ src/isterm/commandManager.ts               |   6 +
+ src/isterm/pty.ts                          |  67 +++++++++++
+ src/runtime/commandLineColor.ts            | 124 +++++++++++++++++++++
+ src/tests/runtime/commandLineColor.test.ts |  32 ++++++
+ src/ui/suggestionRenderer.ts               |  14 ++-
+ 6 files changed, 244 insertions(+), 4 deletions(-)
+ create mode 100644 src/runtime/commandLineColor.ts
+ create mode 100644 src/tests/runtime/commandLineColor.test.ts
+
+diff --git a/shell/shellIntegration-rc.zsh b/shell/shellIntegration-rc.zsh
+index 92f4066..10d01e3 100644
+--- a/shell/shellIntegration-rc.zsh
++++ b/shell/shellIntegration-rc.zsh
+@@ -1,5 +1,8 @@
+ autoload -U add-zsh-hook
+ 
++export ISTERM_OWNS_COMMAND_HIGHLIGHTING=1
++: ${ZSH_HIGHLIGHT_MAXLENGTH:=0}
++
+ if [[ -f $USER_ZDOTDIR/.zshrc ]]; then
+ 	ZDOTDIR=$USER_ZDOTDIR
+ 	. $USER_ZDOTDIR/.zshrc
+@@ -69,4 +72,4 @@ else
+ fi
+ zle -N zle-line-init __is_zle_line_init
+ 
+-add-zsh-hook precmd __is_precmd
+\ No newline at end of file
++add-zsh-hook precmd __is_precmd
+diff --git a/src/isterm/commandManager.ts b/src/isterm/commandManager.ts
+index ca32ea6..fcd6bb7 100644
+--- a/src/isterm/commandManager.ts
++++ b/src/isterm/commandManager.ts
+@@ -129,6 +129,12 @@ export class CommandManager {
+     return this.#stateVersion;
+   }
+ 
++  getCommandLocation(): { line: number; x: number } | undefined {
++    const line = this.#activeCommand.promptEndMarker?.line;
++    const x = this.#activeCommand.promptEndX;
++    return line == null || x == null || this.#activeCommand.promptText == null ? undefined : { line, x };
++  }
++
+   private _syncStateSnapshot(): void {
+     const state = this.#suspended
+       ? {}
+diff --git a/src/isterm/pty.ts b/src/isterm/pty.ts
+index 6fa01c8..e4919f9 100644
+--- a/src/isterm/pty.ts
++++ b/src/isterm/pty.ts
+@@ -29,6 +29,9 @@ import which from "which";
+ import { shellResourcesPath } from "../utils/constants.js";
+ import { recordCommand } from "../utils/frecency.js";
+ import { endTiming, startTiming } from "../utils/performance.js";
++import { getConfig } from "../utils/config.js";
++import { wcswidth } from "../utils/unicode.js";
++import { commandLineColorSpans, commandLineColorTypeAt, type CommandLineColorType } from "../runtime/commandLineColor.js";
+ 
+ const ISTermOnDataEvent = "data";
+ const ISTermOnBufferChangeEvent = "bufferChange";
+@@ -350,6 +353,70 @@ export class ISTerm implements IPty {
+     return bufferType === "normal" ? this.#term.buffer.normal : this.#term.buffer.active;
+   }
+ 
++  private _commandLineColor(type: CommandLineColorType | undefined): string | undefined {
++    if (type == null) return undefined;
++    if (type === "invalidCommand") return "#FF453A";
++    const { colorByType, foreground, types } = getConfig().theme;
++    if (!colorByType) return undefined;
++    return types[type as keyof typeof types] || foreground;
++  }
++
++  private _fgAnsi(hex: string | undefined): string {
++    if (hex == null) return ansi.resetColor;
++    const normalized = hex.trim().replace(/^#/, "");
++    if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return ansi.resetColor;
++    const [r, g, b] = [0, 2, 4].map((idx) => parseInt(normalized.slice(idx, idx + 2), 16));
++    return `\x1b[38;2;${r};${g};${b}m`;
++  }
++
++  getCommandLinePatch(bufferType: BufferType = "active"): string {
++    const commandText = this.#commandManager.getState().commandText;
++    const location = this.#commandManager.getCommandLocation();
++    if (!commandText || location == null || this.isAlternateBuffer()) return "";
++
++    const buffer = this._getBuffer(bufferType);
++    const viewportStart = buffer.baseY;
++    const viewportEnd = buffer.baseY + this.#term.rows - 1;
++    const spans = commandLineColorSpans(commandText, this.cwd || process.cwd());
++    const commandWidth = wcswidth(commandText);
++    let consumed = 0;
++    let y = location.line;
++    let x = location.x;
++    const lines: string[] = [];
++
++    while (consumed < commandWidth && y <= viewportEnd) {
++      const line = buffer.getLine(y);
++      if (line == null) break;
++      const row = y - buffer.baseY;
++      if (y >= viewportStart && row >= 0 && row < this.#term.rows) {
++        let rendered = ansi.cursorTo({ x: x + 1, y: row + 1 });
++        let currentColor = "";
++        for (; x < line.length && consumed < commandWidth; x++) {
++          const cell = line.getCell(x) as unknown as ICellData | undefined;
++          const width = cell?.getWidth() ?? 1;
++          if (width === 0) continue;
++
++          const color = this._fgAnsi(this._commandLineColor(commandLineColorTypeAt(spans, consumed)));
++          if (color !== currentColor) {
++            rendered += color;
++            currentColor = color;
++          }
++
++          const chars = cell?.getChars() ?? "";
++          rendered += chars === "" ? ansi.cursorForward(width) : chars;
++          consumed += Math.max(width, wcswidth(chars));
++        }
++        lines.push(rendered + ansi.resetColor);
++      } else {
++        consumed += Math.max(0, line.length - x);
++      }
++      y += 1;
++      x = 0;
++    }
++
++    return lines.join("");
++  }
++
+   private _getLinePatch(buffer: IBuffer, y: number, patch?: ISTermPatch): string {
+     const viewportStart = buffer.baseY;
+     const viewportEnd = buffer.baseY + this.#term.rows - 1;
+diff --git a/src/runtime/commandLineColor.ts b/src/runtime/commandLineColor.ts
+new file mode 100644
+index 0000000..211b013
+--- /dev/null
++++ b/src/runtime/commandLineColor.ts
+@@ -0,0 +1,124 @@
++// Copyright (c) Microsoft Corporation.
++// Licensed under the MIT License.
++
++import { wcswidth } from "../utils/unicode.js";
++import fs from "node:fs";
++import path from "node:path";
++
++export type CommandLineColorType = Fig.SuggestionType | "invalidCommand";
++
++export type CommandLineColorSpan = {
++  start: number;
++  end: number;
++  type: CommandLineColorType;
++};
++
++const operator = /^(;|\||\|\||&&)$/;
++const commandExistsCache = new Map<string, boolean>();
++const shellBuiltins = new Set([
++  ".",
++  ":",
++  "alias",
++  "bg",
++  "bindkey",
++  "break",
++  "builtin",
++  "cd",
++  "command",
++  "continue",
++  "dirs",
++  "disown",
++  "echo",
++  "eval",
++  "exec",
++  "exit",
++  "export",
++  "false",
++  "fc",
++  "fg",
++  "hash",
++  "history",
++  "jobs",
++  "kill",
++  "let",
++  "local",
++  "popd",
++  "print",
++  "printf",
++  "pushd",
++  "pwd",
++  "read",
++  "readonly",
++  "return",
++  "set",
++  "shift",
++  "source",
++  "test",
++  "times",
++  "trap",
++  "true",
++  "type",
++  "typeset",
++  "ulimit",
++  "unalias",
++  "unset",
++  "wait",
++]);
++
++const executable = (candidate: string): boolean => {
++  try {
++    fs.accessSync(candidate, fs.constants.X_OK);
++    return fs.statSync(candidate).isFile();
++  } catch {
++    return false;
++  }
++};
++
++const pathCommandExists = (command: string, cwd: string): boolean => {
++  if (command.includes("/")) return executable(path.resolve(cwd, command));
++  return (process.env.PATH ?? "")
++    .split(path.delimiter)
++    .filter(Boolean)
++    .some((dir) => executable(path.join(dir, command)));
++};
++
++const commandExists = (command: string, cwd: string): boolean => {
++  const key = `${cwd}\u0000${command}`;
++  const cached = commandExistsCache.get(key);
++  if (cached != null) return cached;
++  const exists = shellBuiltins.has(command) || pathCommandExists(command, cwd);
++  commandExistsCache.set(key, exists);
++  return exists;
++};
++
++export const commandLineColorSpans = (commandText: string, cwd = process.cwd()): CommandLineColorSpan[] => {
++  const spans: CommandLineColorSpan[] = [];
++  let expectingCommand = true;
++
++  for (const match of commandText.matchAll(/\S+/g)) {
++    const raw = match[0];
++    const start = wcswidth(commandText.slice(0, match.index));
++    const end = start + wcswidth(raw);
++
++    if (operator.test(raw)) {
++      spans.push({ start, end, type: "special" });
++      expectingCommand = true;
++      continue;
++    }
++
++    if (raw.includes("=") && expectingCommand && !raw.startsWith("-")) {
++      spans.push({ start, end, type: "special" });
++      continue;
++    }
++
++    const type: CommandLineColorType = expectingCommand ? (commandExists(raw, cwd) ? "subcommand" : "invalidCommand") : raw.startsWith("-") ? "option" : "arg";
++    spans.push({ start, end, type });
++    expectingCommand = false;
++  }
++
++  return spans;
++};
++
++export const commandLineColorTypeAt = (spans: CommandLineColorSpan[], offset: number): CommandLineColorType | undefined => {
++  return spans.find((span) => offset >= span.start && offset < span.end)?.type;
++};
+diff --git a/src/tests/runtime/commandLineColor.test.ts b/src/tests/runtime/commandLineColor.test.ts
+new file mode 100644
+index 0000000..2ccde37
+--- /dev/null
++++ b/src/tests/runtime/commandLineColor.test.ts
+@@ -0,0 +1,32 @@
++// Copyright (c) Microsoft Corporation.
++// Licensed under the MIT License.
++
++import { commandLineColorSpans, commandLineColorTypeAt } from "../../runtime/commandLineColor.js";
++
++const typeAtWord = (command: string, word: string) => {
++  const offset = command.indexOf(word);
++  return commandLineColorTypeAt(commandLineColorSpans(command), offset);
++};
++
++test("classifies command words by shell role", () => {
++  const command = "FOO=bar rtk vercel alias set https://example.test --scope amirsalahys-projects";
++  expect(typeAtWord(command, "FOO=bar")).toBe("special");
++  expect(typeAtWord(command, "rtk")).toBe("subcommand");
++  expect(typeAtWord(command, "vercel")).toBe("arg");
++  expect(typeAtWord(command, "--scope")).toBe("option");
++  expect(typeAtWord(command, "amirsalahys-projects")).toBe("arg");
++});
++
++test("marks unknown command-position words as invalid", () => {
++  const command = "definitely-not-a-real-command --force value";
++  expect(typeAtWord(command, "definitely-not-a-real-command")).toBe("invalidCommand");
++  expect(typeAtWord(command, "--force")).toBe("option");
++  expect(typeAtWord(command, "value")).toBe("arg");
++});
++
++test("starts a new command after shell operators", () => {
++  const command = "git status && npm test";
++  expect(typeAtWord(command, "git")).toBe("subcommand");
++  expect(typeAtWord(command, "&&")).toBe("special");
++  expect(typeAtWord(command, "npm")).toBe("subcommand");
++});
+diff --git a/src/ui/suggestionRenderer.ts b/src/ui/suggestionRenderer.ts
+index 8c15348..315cb5c 100644
+--- a/src/ui/suggestionRenderer.ts
++++ b/src/ui/suggestionRenderer.ts
+@@ -142,7 +142,7 @@ export class SuggestionRenderer {
+         }
+         this.#cache.patch = "none";
+         this.#cache.clear = undefined;
+-        this.#writeOutput(data);
++        this.#writeOutput(this.#renderCommandLineOverlay(data, snapshot));
+         this.#visible = false;
+         this.#direction = direction;
+         return;
+@@ -180,9 +180,17 @@ export class SuggestionRenderer {
+     const showCursor = cursorHidden ? "" : ansi.cursorShow;
+     const { cursorSavePosition, cursorRestorePosition } = this.#cursorPositionSequences;
+     if (direction === "above") {
+-      return data + ansi.cursorHide + cursorSavePosition + ansi.cursorPrevLine.repeat(lines) + patch + cursorRestorePosition + showCursor;
++      return this.#renderCommandLineOverlay(data + ansi.cursorHide + cursorSavePosition + ansi.cursorPrevLine.repeat(lines) + patch + cursorRestorePosition + showCursor, snapshot);
+     }
+-    return ansi.cursorHide + cursorSavePosition + ansi.cursorNextLine + patch + cursorRestorePosition + showCursor + data;
++    return this.#renderCommandLineOverlay(ansi.cursorHide + cursorSavePosition + ansi.cursorNextLine + patch + cursorRestorePosition + showCursor + data, snapshot);
++  }
++
++  #renderCommandLineOverlay(data: string, snapshot: RenderSnapshot): string {
++    const patch = this.#term.getCommandLinePatch();
++    if (patch.length === 0) return data;
++    const showCursor = snapshot.cursor.hidden ? "" : ansi.cursorShow;
++    const { cursorSavePosition, cursorRestorePosition } = this.#cursorPositionSequences;
++    return data + ansi.cursorHide + cursorSavePosition + patch + cursorRestorePosition + showCursor;
+   }
+ 
+   #clearOutput(direction: Direction, snapshot: RenderSnapshot, bufferType: PatchBuffer = "active"): string {
+-- 
+2.51.0
+

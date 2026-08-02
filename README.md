@@ -3,7 +3,7 @@
 IDE-style dropdown autocomplete in the terminal — the Amazon Q autocomplete
 experience, self-hosted — tuned for JS / React Native / iOS / Android tooling.
 
-Type `xcodebuild -scheme ` and get your project's **real** schemes. Type `adb -s `
+Type `xcodebuild -scheme` and get your project's **real** schemes. Type `adb -s`
 and get your **actually connected** devices. Suggestions are ranked by what you
 actually run, in the directory you're in.
 
@@ -18,16 +18,16 @@ with ANSI escapes.
 
 ### Requirements
 
-| | |
-|---|---|
-| **Node** | `>=18` and `<23` — **hard requirement** (see below). Check with `node -v` |
-| **git** | to fetch the engine |
-| **OS** | macOS, Linux, or Windows (`darwin/linux/win32` × `x64/arm64`) |
+|          |                                                                             |
+| -------- | --------------------------------------------------------------------------- |
+| **Node** | `>=18` and `<23` — **hard requirement** (see below). Check with `node -v`   |
+| **git**  | to fetch the engine                                                         |
+| **OS**   | macOS, Linux, or Windows (`darwin/linux/win32` × `x64/arm64`)               |
 | Optional | Xcode CLT for scheme/simulator completion; Android SDK for `adb` completion |
 
 > **Node must be < 23.** The engine declares `node >=18.0 <23.0.0` and `node-pty`
 > loads a prebuilt native binding matched to the Node ABI — so a too-new Node
-> fails at *runtime*, not at install, which looks like "the dropdown just doesn't
+> fails at _runtime_, not at install, which looks like "the dropdown just doesn't
 > appear". `nvm install 22` or `brew install node@22` if you're on 23+.
 > Setup checks this and refuses to continue.
 
@@ -41,11 +41,11 @@ This clones the repo to `~/.termauto/src` and runs setup. Re-running it updates
 an existing checkout rather than re-cloning, and it refuses to touch one with
 uncommitted changes. Three environment variables tune it:
 
-| | |
-|---|---|
+|                 |                                                        |
+| --------------- | ------------------------------------------------------ |
 | `TERMAUTO_HOME` | where to keep the checkout (default `~/.termauto/src`) |
-| `TERMAUTO_REF` | branch, tag or commit (default `main`) |
-| `TERMAUTO_REPO` | clone URL, for a fork |
+| `TERMAUTO_REF`  | branch, tag or commit (default `main`)                 |
+| `TERMAUTO_REPO` | clone URL, for a fork                                  |
 
 <details>
 <summary>Or clone it yourself</summary>
@@ -80,7 +80,7 @@ Then start a session:
 termauto
 ```
 
-Type `git ch`, `yarn `, or `xcodebuild -scheme ` and the dropdown appears.
+Type `git ch`, `yarn`, or `xcodebuild -scheme` and the dropdown appears.
 
 > **On names.** The command is `termauto`. The on-disk locations are still
 > upstream's — config at `~/.config/inshellisense/rc.toml`, data at
@@ -92,18 +92,18 @@ Type `git ch`, `yarn `, or `xcodebuild -scheme ` and the dropdown appears.
 
 Run `termauto --help` for this table in the terminal.
 
-| Key | Action |
-| --- | --- |
-| <kbd>Tab</kbd> | accept the highlighted suggestion |
-| <kbd>Enter</kbd> | accept; a second <kbd>Enter</kbd> runs the line |
-| <kbd>→</kbd> | accept, only with the cursor at end of line |
-| <kbd>↑</kbd> / <kbd>↓</kbd> | move the selection |
-| <kbd>Esc</kbd> | dismiss for the rest of the line; <kbd>Tab</kbd> reopens |
-| <kbd>Alt</kbd>+<kbd>1</kbd>…<kbd>9</kbd> | accept the Nth visible suggestion |
-| <kbd>Alt</kbd>+<kbd>i</kbd> | insert the prefix common to every suggestion |
-| <kbd>Alt</kbd>+<kbd>Enter</kbd> | accept **and run**, in one keystroke |
-| <kbd>Alt</kbd>+<kbd>d</kbd> | show/hide the description panel |
-| <kbd>Alt</kbd>+<kbd>l</kbd> / <kbd>Alt</kbd>+<kbd>s</kbd> | show more / fewer suggestions |
+| Key                                                       | Action                                                   |
+| --------------------------------------------------------- | -------------------------------------------------------- |
+| <kbd>Tab</kbd>                                            | accept the highlighted suggestion                        |
+| <kbd>Enter</kbd>                                          | accept; a second <kbd>Enter</kbd> runs the line          |
+| <kbd>→</kbd>                                              | accept, only with the cursor at end of line              |
+| <kbd>↑</kbd> / <kbd>↓</kbd>                               | move the selection                                       |
+| <kbd>Esc</kbd>                                            | dismiss for the rest of the line; <kbd>Tab</kbd> reopens |
+| <kbd>Alt</kbd>+<kbd>1</kbd>…<kbd>9</kbd>                  | accept the Nth visible suggestion                        |
+| <kbd>Alt</kbd>+<kbd>i</kbd>                               | insert the prefix common to every suggestion             |
+| <kbd>Alt</kbd>+<kbd>Enter</kbd>                           | accept **and run**, in one keystroke                     |
+| <kbd>Alt</kbd>+<kbd>d</kbd>                               | show/hide the description panel                          |
+| <kbd>Alt</kbd>+<kbd>l</kbd> / <kbd>Alt</kbd>+<kbd>s</kbd> | show more / fewer suggestions                            |
 
 The <kbd>Alt</kbd> set is modelled on Amazon Q's action list. Only
 <kbd>Alt</kbd>+letter, <kbd>Alt</kbd>+digit and <kbd>Alt</kbd>+<kbd>Enter</kbd>
@@ -122,25 +122,25 @@ Upstream only accepts on <kbd>Tab</kbd>. We add two more, both config-gated:
 
 Each accept key has a **mode** (Amazon Q's per-key model), set under `[keys]`:
 
-| Mode | Behaviour |
-| --- | --- |
-| `insert` *(default)* | accept the highlighted suggestion |
-| `insertOrPrefix` | insert the shared prefix while candidates still differ, and only commit once they don't — how a shell's own completion behaves |
-| `ignore` | don't intercept; the key goes straight to the shell |
+| Mode                 | Behaviour                                                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `insert` _(default)_ | accept the highlighted suggestion                                                                                              |
+| `insertOrPrefix`     | insert the shared prefix while candidates still differ, and only commit once they don't — how a shell's own completion behaves |
+| `ignore`             | don't intercept; the key goes straight to the shell                                                                            |
 
 `acceptOnEnter = false` / `acceptOnRightArrow = false` still work, and map onto
 `ignore`.
 
 After <kbd>Enter</kbd> accepts, the menu **stays shut until you type something** —
 a space counts. Otherwise accepting would immediately reopen it and the second
-<kbd>Enter</kbd> would accept *that* instead of running the line, so the command
+<kbd>Enter</kbd> would accept _that_ instead of running the line, so the command
 could never be submitted. Deliberately not a timer: one either expires while
 you're still deciding, or holds the menu back after you've carried on typing.
 
 <kbd>Esc</kbd> closes the menu **for the rest of the line** — it no longer pops
 back on the next character (upstream reset its hidden flag on the very next
 keystroke, which made Esc look broken). <kbd>Tab</kbd> re-opens it, as does
-submitting or clearing the line. <kbd>↑</kbd>/<kbd>↓</kbd> deliberately do *not*
+submitting or clearing the line. <kbd>↑</kbd>/<kbd>↓</kbd> deliberately do _not_
 re-open: upstream already uses those to keep the menu hidden while you browse
 shell history.
 
@@ -161,7 +161,7 @@ Use this rather than the upstream `termauto init zsh >> ~/.zshrc`, because it al
   never starts,
 - and wraps the hook in a **stronger guard** than the generated script's.
 
-> **Why the stronger guard.** zsh does *not* put `c` in `$-` for `zsh -i -c`, so
+> **Why the stronger guard.** zsh does _not_ put `c` in `$-` for `zsh -i -c`, so
 > upstream's `$- != *c*` test doesn't catch that case — any tooling that runs
 > `zsh -i -c …` would hang forever waiting on the PTY. The added
 > `-z "$ZSH_EXECUTION_STRING"` check identifies a genuinely interactive shell.
@@ -170,6 +170,42 @@ Use this rather than the upstream `termauto init zsh >> ~/.zshrc`, because it al
 > notably a plugin manager — can break it.
 
 For fish / pwsh / nu: `termauto init <shell>`, placed last in that rc file.
+
+### Parameterized command aliases
+
+Managed aliases let you save a whole command line and mark individual words as
+parameters. When you run the generated alias command, termauto asks for the
+missing values and then runs the expanded command.
+
+```sh
+termauto alias set change-alias
+```
+
+With no command after the alias name, termauto shows recent commands from
+frecency history, then prints the command as numbered space-separated tokens.
+Enter the token numbers that should become parameters, then name each one.
+
+For the example below, choose the URL token and name it `first-url`:
+
+```sh
+rtk vercel alias set https://****.vercel.app test.com --scope testaccount-projects
+```
+
+Then enable the generated functions in bash or zsh:
+
+```sh
+eval "$(termauto alias init)"
+```
+
+After that, calling `change-alias` prompts for `first-url` and runs the same
+`rtk vercel alias set ...` command with the new value.
+
+Non-interactive form:
+
+```sh
+termauto alias set change-alias -p 5=first-url -- rtk vercel alias set https://****.vercel.app test.com --scope testaccount-projects
+termauto alias run change-alias --print https://new.example.app
+```
 
 **To undo:** delete the `termauto (inshellisense)` block from `~/.zshrc` (a
 timestamped `~/.zshrc.pre-termauto-*` backup is kept). Full removal:
@@ -195,7 +231,7 @@ ours: 7 (3 override bundled, 4 unique)
 ✓ specs.path resolved — confirmed via artisan, rtk, sail, termauto (present only in this checkout)
 ```
 
-It keys on a spec that exists *only* here, because most of ours override bundled
+It keys on a spec that exists _only_ here, because most of ours override bundled
 specs (`adb`, `xcodebuild`) — seeing those names would prove nothing, since
 they'd be loaded anyway. If it fails, `specs.path` isn't pointing at this
 checkout's `specs/build`; the usual cause is a pre-existing config that setup
@@ -241,8 +277,8 @@ result.** Skipping it means the change works here and nowhere else.
 
 Three non-obvious things carry the design:
 
-**1. Local specs override bundled ones.** `loadLocalSpecsSet()` feeds the *same*
-mutable `specSet` as the bundled corpus and runs *after* it, so a spec we emit
+**1. Local specs override bundled ones.** `loadLocalSpecsSet()` feeds the _same_
+mutable `specSet` as the bundled corpus and runs _after_ it, so a spec we emit
 under a given name replaces the bundled one. Adding specs and fixing stale ones
 needs **no engine changes at all** — just `specs.path` in the config.
 
@@ -254,7 +290,7 @@ upstream change; this way untouched parts keep tracking upstream.
 build instead of silently leaving a dead generator.
 
 **3. Frecency is one bounded number.** Ranking is a single `priority` sort. Our
-patch adds a shared `rankSuggestions()` — used by *both* recommendation paths so
+patch adds a shared `rankSuggestions()` — used by _both_ recommendation paths so
 they can't drift apart — with a boost capped at 25 against the engine's own scale
 (options 45, spec default 50, generators 60). History can lift a suggestion; it
 can never flatten what the spec says. Hits decay with a 14-day half-life, and
@@ -270,14 +306,12 @@ ordering is byte-identical, which is why all 93 upstream snapshots still pass.
 
 ### Config
 
-`~/.config/inshellisense/rc.toml` (generated by setup). The schema is
-`additionalProperties: false` — an unknown key fails validation at startup.
+Default values live in `termauto.config.json` at the repo root. User overrides
+still live in `~/.config/inshellisense/rc.toml` (generated by setup). The schema
+is `additionalProperties: false` — an unknown key fails validation at startup.
 
 ```toml
-[specs]
-path = ["/abs/path/to/termauto/specs/build"]   # machine-specific
-
-maxSuggestions = 10       # default 5 is cramped for e.g. xcodebuild's 78 options
+maxSuggestions = 10       # root default; useful for e.g. xcodebuild's 78 options
 sortMethod = "frecency"   # frecency | recency | alphabetical | none — see below
 useFrecency = true        # legacy shorthand; false means sortMethod = "none"
 useNerdFont = false       # legacy shorthand for theme.icons = "nerd"
@@ -301,7 +335,7 @@ decreaseSize       = { key = "s", meta = true }
 icons = "auto"                 # "auto" | "codicon" | "unicode" | "emoji" | "none"
 border = "#2C2C2E"             # hairline border, shaded (bottom/right) edge
 borderHighlight = "#48484A"    # lit (top/left) edge — reads as a raised panel
-activeBackground = "#0A84FF"   # systemBlue selection
+activeBackground = "#4274A7"   # selected row background
 activeForeground = "#FFFFFF"   # selected row text
 foreground = "#E5E5EA"         # unselected row text
 icon = "#8E8E93"               # icon column on unselected rows (dimmed)
@@ -312,14 +346,17 @@ surface = "clear"              # "clear" (glass) or a hex fill
 colorByType = true             # tint each row by what it is — see below
 
 [theme.types]                  # per-kind row colour; "" means use foreground
-folder = "#64D2FF"             # systemTeal
-file = ""                      # baseline
-subcommand = "#30D158"         # systemGreen
-option = "#BF5AF2"             # systemPurple
-arg = "#98989D"                # systemGray
-special = "#FF9F0A"            # systemOrange
-shortcut = "#FF9F0A"
-mixin = "#FF9F0A"
+folder = "#A6C8DC"             # lighter blue-teal
+file = "#7ED2C4"
+subcommand = "#97D6A9"         # lighter green
+option = "#CFB6E3"             # lighter purple
+arg = "#C1C1C6"                # lighter gray
+special = "#FFDCA8"            # lighter orange
+shortcut = "#FFDCA8"
+mixin = "#FFDCA8"
+
+[specs]
+path = ["/abs/path/to/termauto/specs/build"]   # machine-specific
 ```
 
 Defaults model a frosted native macOS menu: rounded corners, a hairline border lit
@@ -332,18 +369,17 @@ A folder, a file and a subcommand are different kinds of thing, and a single
 foreground colour made them one undifferentiated list. Each row is now tinted by
 its kind:
 
-| Kind | Colour | Why |
-| --- | --- | --- |
-| `folder` | systemTeal | `ls` has coloured directories blue for decades. Teal rather than systemBlue itself, because the selection bar **is** systemBlue — a blue label on a blue bar is the one combination that loses information |
-| `subcommand` | systemGreen | `ls` green for executables |
-| `option` | systemPurple | a modifier, not a thing |
-| `arg` | systemGray | a placeholder for a value you supply |
-| `file` | *(foreground)* | the commonest row. Colouring the baseline leaves nothing to contrast against |
+| Kind         | Colour         | Why                                                                                                                                                                                                        |
+| ------------ | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `folder`     | systemTeal     | `ls` has coloured directories blue for decades. Teal rather than systemBlue itself, because the selection bar **is** systemBlue — a blue label on a blue bar is the one combination that loses information |
+| `subcommand` | systemGreen    | `ls` green for executables                                                                                                                                                                                 |
+| `option`     | systemPurple   | a modifier, not a thing                                                                                                                                                                                    |
+| `arg`        | systemGray     | a placeholder for a value you supply                                                                                                                                                                       |
+| `file`       | _(foreground)_ | the commonest row. Colouring the baseline leaves nothing to contrast against                                                                                                                               |
 
-Only the **label** is tinted. The icon column keeps its dim grey: the glyph
-already encodes the kind by shape, and colouring both made the row read as two
-competing highlights. This also means the colouring still works with
-`icons = "none"`, where it becomes the only type cue.
+The gutter, icon and label are tinted together on unselected rows, so the colour
+you set under `[theme.types]` is the colour the row actually reads as. With
+`icons = "none"`, the same tinting becomes the only type cue.
 
 The selected row is deliberately exempt — it stays a solid systemBlue bar across
 gutter, icon and label, because tinting text inside it just looks muddy.
@@ -357,6 +393,15 @@ than silently colouring nothing.
 `termauto doctor` prints the tints in situ, and warns when your terminal reports
 fewer than 24-bit colours — below truecolour the hexes are approximated and two
 nearby tints can collapse onto the same ANSI colour.
+
+The active command line is also repainted by termauto using the same palette:
+valid command-position words use `subcommand`, invalid command-position words
+are red, flags use `option`, values use `arg`, and shell
+operators/environment assignments use `special`. In zsh sessions, termauto sets
+`ZSH_HIGHLIGHT_MAXLENGTH=0` before sourcing your real `.zshrc`, which disables
+the common `zsh-syntax-highlighting` path inside the wrapped session. Plugins
+that ignore that guard may still run, but termauto's repaint is emitted after the
+shell echo and wins visually.
 
 > **A related bug this exposed.** Rows carry a `type`, but it used to be copied
 > straight off the spec's suggestion object — where it is almost never set, since
@@ -372,13 +417,13 @@ variation selector — measured inconsistently across terminals, so the icon col
 knocked labels out of alignment. Every glyph in the `nerd` and `unicode` sets is
 single-cell, enforced by a test.
 
-| `theme.icons` | What you get |
-| --- | --- |
-| `auto` *(default)* | `codicon` when the terminal can render them, else `unicode` |
-| `codicon` | [Codicons](https://microsoft.github.io/vscode-codicons/) — VS Code's own icon set, the same artwork IntelliSense uses for its completion list |
-| `unicode` | Geometric symbols (`◆ ▪ ▸ · ★`) — **the only set that renders in every terminal** |
-| `emoji` | Upstream's set, alignment caveat and all |
-| `none` | No icon column |
+| `theme.icons`      | What you get                                                                                                                                  |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auto` _(default)_ | `codicon` when the terminal can render them, else `unicode`                                                                                   |
+| `codicon`          | [Codicons](https://microsoft.github.io/vscode-codicons/) — VS Code's own icon set, the same artwork IntelliSense uses for its completion list |
+| `unicode`          | Geometric symbols (`◆ ▪ ▸ · ★`) — **the only set that renders in every terminal**                                                             |
+| `emoji`            | Upstream's set, alignment caveat and all                                                                                                      |
+| `none`             | No icon column                                                                                                                                |
 
 `nerd` is accepted as a deprecated alias for `codicon`.
 
@@ -393,7 +438,7 @@ whole story, and why `unicode` is the safe default.
 Run `scripts/icon-check.sh` in a terminal to see which sets it can draw.
 
 **Codicons are delivered by a Nerd Font.** A terminal renders text and nothing
-else, so an icon has to *be* a character: Codicons occupy U+EA60–U+EC1E in the
+else, so an icon has to _be_ a character: Codicons occupy U+EA60–U+EC1E in the
 private use area, and a patched font is the only way those codepoints resolve to
 artwork. Nerd Font is the container; Codicons are the contents.
 
@@ -431,13 +476,13 @@ alignment breaks.
 
 #### Suggestion order
 
-| `sortMethod` | Behaviour |
-| --- | --- |
-| `lastUsed` | most recently used first, whatever its type; then spec order |
-| `frecency` *(engine default)* | how often **and** how recently you ran it, weighted 4× for the current directory, decaying with a 14-day half-life |
-| `recency` | Amazon Q's model: anything used once is promoted to priority 75, most-recent first. No decay, no frequency, no directory scope |
-| `alphabetical` | purely by name; usage and spec priority both ignored |
-| `none` | spec-declared priority only |
+| `sortMethod`                  | Behaviour                                                                                                                      |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `lastUsed`                    | most recently used first, whatever its type; then spec order                                                                   |
+| `frecency` _(engine default)_ | how often **and** how recently you ran it, weighted 4× for the current directory, decaying with a 14-day half-life             |
+| `recency`                     | Amazon Q's model: anything used once is promoted to priority 75, most-recent first. No decay, no frequency, no directory scope |
+| `alphabetical`                | purely by name; usage and spec priority both ignored                                                                           |
+| `none`                        | spec-declared priority only                                                                                                    |
 
 `frecency` is the default because it is strictly more informed than `recency` —
 Q keys its index on the command alone, so ranking learned in one project applies
@@ -446,7 +491,7 @@ used, permanently. `recency` is offered for faithfulness, not because it is bett
 
 `lastUsed` is the literal "what I ran last, first" reading. It ignores priority
 entirely, which is the difference from `recency`: Q's model only promotes within
-a 50-75 band, so an *option* (priority 45) barely moves even after you use it.
+a 50-75 band, so an _option_ (priority 45) barely moves even after you use it.
 
 All usage modes learn from **executed commands and accepted suggestions**. An acceptance
 counts half: you can accept a completion and then think better of it, so running
@@ -463,15 +508,15 @@ nothing to add for those, and writing our own would just shadow a better spec.
 
 Our seven exist because Fig's corpus is missing or thin there:
 
-| Spec | Why |
-| --- | --- |
-| `artisan` | **absent from Fig entirely.** Laravel's actual day-to-day CLI |
-| `sail` | absent from Fig; Laravel's Docker wrapper |
-| `php` | augmented so `php artisan <TAB>` chains into the artisan spec |
-| `adb` | augmented with connected-device completion |
-| `xcodebuild` | augmented with real schemes and simulators |
-| `rtk` | private tool, no upstream spec |
-| `termauto` | this tool. Fig has no spec for it under any name — not `is`, not `inshellisense` |
+| Spec         | Why                                                                              |
+| ------------ | -------------------------------------------------------------------------------- |
+| `artisan`    | **absent from Fig entirely.** Laravel's actual day-to-day CLI                    |
+| `sail`       | absent from Fig; Laravel's Docker wrapper                                        |
+| `php`        | augmented so `php artisan <TAB>` chains into the artisan spec                    |
+| `adb`        | augmented with connected-device completion                                       |
+| `xcodebuild` | augmented with real schemes and simulators                                       |
+| `rtk`        | private tool, no upstream spec                                                   |
+| `termauto`   | this tool. Fig has no spec for it under any name — not `is`, not `inshellisense` |
 
 `artisan` and `sail` are **fully dynamic**: the command list comes from
 `artisan list --format=json`, so it includes whatever the project actually has —
@@ -585,14 +630,14 @@ Our eight commits, kept separate so rebases stay cheap:
 - **`fix(ui): make Esc actually dismiss, and style the menu like a macOS menu`**
 - **`feat(ui): accept on Enter/Right, and actually style the dropdown`** — also
   fixes a latent upstream bug: `renderBox` did `chalk.hex(color).apply(text)`,
-  which calls `Function.prototype.apply` with `text` as *thisArg* and **no
+  which calls `Function.prototype.apply` with `text` as _thisArg_ and **no
   arguments**, so chalk returned `""` and every border character disappeared.
   Dormant only because no caller ever passed a `borderColor`. **Also PR-worthy.**
 - **`feat(ui): icon sets (nerd/unicode/emoji) + frosted glass menu styling`** —
   swaps the emoji icon column for Nerd Font glyphs with a plain-Unicode fallback
   (see [Icons](#icons)), dims the icon column, and adds a lit/shaded border plus
   `theme.surface`. Also tightens the `specs` schema: a root key written below the
-  `[specs]` header is TOML-scoped *into* that table, so it validated fine while
+  `[specs]` header is TOML-scoped _into_ that table, so it validated fine while
   being silently ignored — which is how the generated config's
   `maxSuggestions = 10` sat dead and everyone got 5.
 

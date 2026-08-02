@@ -1,0 +1,460 @@
+From bc3f171a8fea8a91d623d4d5e2af38e733bdb693 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Sun, 2 Aug 2026 19:04:59 +0300
+Subject: [PATCH 16/19] feat: add parameterized command aliases
+
+---
+ src/commands/alias.ts       | 190 ++++++++++++++++++++++++++++++++++++
+ src/index.ts                |   2 +
+ src/runtime/alias.ts        |  21 ++--
+ src/utils/managedAliases.ts | 181 ++++++++++++++++++++++++++++++++++
+ 4 files changed, 385 insertions(+), 9 deletions(-)
+ create mode 100644 src/commands/alias.ts
+ create mode 100644 src/utils/managedAliases.ts
+
+diff --git a/src/commands/alias.ts b/src/commands/alias.ts
+new file mode 100644
+index 0000000..bc6938f
+--- /dev/null
++++ b/src/commands/alias.ts
+@@ -0,0 +1,190 @@
++// Copyright (c) Microsoft Corporation.
++// Licensed under the MIT License.
++
++import { Command } from "commander";
++import readline from "node:readline/promises";
++import { stdin as input, stdout as output } from "node:process";
++
++import { parseCommand } from "../runtime/parser.js";
++import { inferShell, Shell } from "../utils/shell.js";
++import { launcherName } from "../utils/constants.js";
++import {
++  executeManagedAlias,
++  formatCommand,
++  getManagedAlias,
++  readManagedAliases,
++  recentCommands,
++  removeManagedAlias,
++  renderManagedAliasInit,
++  validateAliasName,
++  validateParameterName,
++  writeManagedAlias,
++  type ManagedAliasParameter,
++} from "../utils/managedAliases.js";
++
++type SetOptions = {
++  param?: string[];
++};
++
++type RunOptions = {
++  print?: boolean;
++};
++
++const parseIndexes = (raw: string, max: number): number[] => {
++  const indexes = new Set<number>();
++  for (const part of raw.split(/[,\s]+/).filter(Boolean)) {
++    const value = Number(part);
++    if (!Number.isInteger(value) || value < 1 || value > max) {
++      throw new Error(`invalid token number '${part}'`);
++    }
++    indexes.add(value - 1);
++  }
++  return [...indexes].sort((a, b) => a - b);
++};
++
++const parseParamOptions = (params: string[] | undefined, tokens: string[]): ManagedAliasParameter[] => {
++  if (!params || params.length === 0) return [];
++  return params.map((param) => {
++    const [rawIndex, name] = param.split("=");
++    const tokenIndex = Number(rawIndex) - 1;
++    if (!Number.isInteger(tokenIndex) || tokenIndex < 0 || tokenIndex >= tokens.length) {
++      throw new Error(`invalid --param token number '${rawIndex}'`);
++    }
++    const error = validateParameterName(name ?? "");
++    if (error) throw new Error(error);
++    return { name, tokenIndex, defaultValue: tokens[tokenIndex] };
++  });
++};
++
++const chooseRecentCommand = async (rl: readline.Interface): Promise<string[]> => {
++  const commands = await recentCommands();
++  if (commands.length === 0) throw new Error("no recent commands found; pass the command after -- instead");
++
++  process.stdout.write("Recent commands:\n");
++  commands.forEach((command, index) => process.stdout.write(`  ${index + 1}. ${command}\n`));
++  const raw = await rl.question("Command number: ");
++  const choice = Number(raw);
++  if (!Number.isInteger(choice) || choice < 1 || choice > commands.length) throw new Error(`invalid command number '${raw}'`);
++
++  return parseCommand(commands[choice - 1] + " ", Shell.Bash).map((token) => token.token);
++};
++
++const promptParameters = async (rl: readline.Interface, tokens: string[]): Promise<ManagedAliasParameter[]> => {
++  process.stdout.write("Command tokens:\n");
++  tokens.forEach((token, index) => process.stdout.write(`  ${index + 1}. ${token}\n`));
++
++  const selected = await rl.question("Parameter token numbers (comma-separated, blank for none): ");
++  const indexes = selected.trim().length === 0 ? [] : parseIndexes(selected, tokens.length);
++  const parameters: ManagedAliasParameter[] = [];
++  const usedNames = new Set<string>();
++
++  for (const tokenIndex of indexes) {
++    const name = await rl.question(`Name for token ${tokenIndex + 1} (${tokens[tokenIndex]}): `);
++    const error = validateParameterName(name);
++    if (error) throw new Error(error);
++    if (usedNames.has(name)) throw new Error(`duplicate parameter name '${name}'`);
++    usedNames.add(name);
++    parameters.push({ name, tokenIndex, defaultValue: tokens[tokenIndex] });
++  }
++  return parameters;
++};
++
++const setAction = (program: Command) => async (name: string, commandParts: string[], options: SetOptions) => {
++  const aliasError = validateAliasName(name);
++  if (aliasError) program.error(aliasError, { exitCode: 1 });
++
++  const rl = readline.createInterface({ input, output });
++  try {
++    const tokens = commandParts.length > 0 ? commandParts : await chooseRecentCommand(rl);
++    if (tokens.length === 0) throw new Error("alias command cannot be empty");
++    const parameters = options.param?.length ? parseParamOptions(options.param, tokens) : await promptParameters(rl, tokens);
++    const saved = await writeManagedAlias({ name, tokens, parameters });
++    process.stdout.write(`Saved ${saved.name}: ${formatCommand(saved.tokens)}\n`);
++    if (saved.parameters.length > 0) {
++      process.stdout.write(`Parameters: ${saved.parameters.map((parameter) => parameter.name).join(", ")}\n`);
++    }
++    process.stdout.write(`Enable it in bash/zsh with: eval "$(${launcherName()} alias init)"\n`);
++  } catch (error) {
++    program.error(error instanceof Error ? error.message : String(error), { exitCode: 1 });
++  } finally {
++    rl.close();
++  }
++};
++
++const runAction = (program: Command) => async (name: string, values: string[], options: RunOptions) => {
++  const alias = await getManagedAlias(name);
++  if (!alias) program.error(`unknown managed alias '${name}'`, { exitCode: 1 });
++  try {
++    const code = await executeManagedAlias(alias, values, options.print ?? false);
++    process.exit(code);
++  } catch (error) {
++    program.error(error instanceof Error ? error.message : String(error), { exitCode: 1 });
++  }
++};
++
++const listAction = async () => {
++  const aliases = await readManagedAliases();
++  for (const alias of aliases) {
++    const params = alias.parameters.length > 0 ? ` (${alias.parameters.map((parameter) => parameter.name).join(", ")})` : "";
++    process.stdout.write(`${alias.name}${params}: ${formatCommand(alias.tokens)}\n`);
++  }
++};
++
++const removeAction = (program: Command) => async (name: string) => {
++  const removed = await removeManagedAlias(name);
++  if (!removed) program.error(`unknown managed alias '${name}'`, { exitCode: 1 });
++  process.stdout.write(`Removed ${name}\n`);
++};
++
++const initAction = (program: Command) => async (shellName: string | undefined) => {
++  const shell = (shellName as Shell | undefined) ?? (await inferShell());
++  if (shell == null) program.error("Unable to identify shell, pass bash or zsh", { exitCode: 1 });
++  if (shell !== Shell.Bash && shell !== Shell.Zsh) program.error("managed aliases are only supported for bash and zsh", { exitCode: 1 });
++
++  try {
++    process.stdout.write(await renderManagedAliasInit(shell));
++  } catch (error) {
++    program.error(error instanceof Error ? error.message : String(error), { exitCode: 1 });
++  }
++};
++
++const cmd = new Command("alias");
++cmd.description("manage parameterized command aliases");
++
++const set = new Command("set");
++set.description("save a parameterized alias from a command or recent command");
++set.argument("<name>");
++set.argument("[command...]", "command tokens; use -- before commands with flags");
++set.option("-p, --param <token=name...>", "mark a token number as a parameter without prompting");
++set.allowUnknownOption(true);
++set.action(setAction(set));
++
++const run = new Command("run");
++run.description("run a managed alias, prompting for missing parameter values");
++run.argument("<name>");
++run.argument("[values...]");
++run.option("--print", "print the expanded command instead of running it");
++run.action(runAction(run));
++
++const list = new Command("list");
++list.description("list managed aliases");
++list.action(listAction);
++
++const remove = new Command("remove");
++remove.alias("rm");
++remove.description("remove a managed alias");
++remove.argument("<name>");
++remove.action(removeAction(remove));
++
++const init = new Command("init");
++init.description("print bash/zsh functions for all managed aliases");
++init.argument("[shell]", "bash or zsh");
++init.action(initAction(init));
++
++cmd.addCommand(set);
++cmd.addCommand(run);
++cmd.addCommand(list);
++cmd.addCommand(remove);
++cmd.addCommand(init);
++
++export default cmd;
+diff --git a/src/index.ts b/src/index.ts
+index 9237b8c..1972657 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -13,6 +13,7 @@ import uninstall from "./commands/uninstall.js";
+ import init from "./commands/init.js";
+ import specs from "./commands/specs/root.js";
+ import doctor from "./commands/doctor.js";
++import alias from "./commands/alias.js";
+ import { action, supportedShells } from "./commands/root.js";
+ import { getVersion } from "./utils/version.js";
+ 
+@@ -78,6 +79,7 @@ program.addCommand(reinit);
+ program.addCommand(doctor);
+ program.addCommand(specs);
+ program.addCommand(complete);
++program.addCommand(alias);
+ program.addCommand(uninstall);
+ 
+ program.parse();
+diff --git a/src/runtime/alias.ts b/src/runtime/alias.ts
+index 47501a7..6f13352 100644
+--- a/src/runtime/alias.ts
++++ b/src/runtime/alias.ts
+@@ -7,6 +7,7 @@ import { gitBashPath, Shell } from "../utils/shell.js";
+ import { CommandToken, parseCommand } from "./parser.js";
+ import { buildExecuteShellCommand } from "./utils.js";
+ import os from "node:os";
++import { readManagedAliases } from "../utils/managedAliases.js";
+ 
+ const loadedAliases: { [key: string]: CommandToken[] | undefined } = {};
+ let aliasNames: string[] = [];
+@@ -52,16 +53,18 @@ const loadZshAliases = async () => {
+ };
+ 
+ export const loadAliases = async (shell: Shell) => {
+-  if (!getConfig().useAliases) return;
+-  switch (shell) {
+-    case Shell.Bash:
+-      await loadBashAliases();
+-      break;
+-    case Shell.Zsh:
+-      await loadZshAliases();
+-      break;
++  if (getConfig().useAliases) {
++    switch (shell) {
++      case Shell.Bash:
++        await loadBashAliases();
++        break;
++      case Shell.Zsh:
++        await loadZshAliases();
++        break;
++    }
+   }
+-  aliasNames = Object.keys(loadedAliases).sort();
++  const managedAliases = await readManagedAliases();
++  aliasNames = [...new Set([...Object.keys(loadedAliases), ...managedAliases.map((alias) => alias.name)])].sort();
+ };
+ 
+ export const getAliasNames = () => aliasNames;
+diff --git a/src/utils/managedAliases.ts b/src/utils/managedAliases.ts
+new file mode 100644
+index 0000000..7e392da
+--- /dev/null
++++ b/src/utils/managedAliases.ts
+@@ -0,0 +1,181 @@
++// Copyright (c) Microsoft Corporation.
++// Licensed under the MIT License.
++
++import childProcess from "node:child_process";
++import fsAsync from "node:fs/promises";
++import path from "node:path";
++import readline from "node:readline/promises";
++import { stdin as input, stdout as output } from "node:process";
++
++import { allResourcesPath, launcherName } from "./constants.js";
++import { Shell } from "./shell.js";
++
++export type ManagedAliasParameter = {
++  name: string;
++  tokenIndex: number;
++  defaultValue: string;
++};
++
++export type ManagedAlias = {
++  name: string;
++  tokens: string[];
++  parameters: ManagedAliasParameter[];
++  createdAt: number;
++  updatedAt: number;
++};
++
++type Store = {
++  version: 1;
++  aliases: ManagedAlias[];
++};
++
++const storePath = path.join(allResourcesPath, "managed-aliases.json");
++const frecencyPath = path.join(allResourcesPath, "frecency.jsonl");
++
++const aliasNameRegex = /^[A-Za-z0-9._:-]+$/;
++const parameterNameRegex = /^[A-Za-z][A-Za-z0-9_-]*$/;
++
++const emptyStore = (): Store => ({ version: 1, aliases: [] });
++
++export const validateAliasName = (name: string): string | undefined => {
++  if (name.length === 0) return "alias name cannot be empty";
++  if (!aliasNameRegex.test(name)) return "alias names may only contain letters, numbers, dot, underscore, colon, and hyphen";
++  return undefined;
++};
++
++export const validateParameterName = (name: string): string | undefined => {
++  if (name.length === 0) return "parameter name cannot be empty";
++  if (!parameterNameRegex.test(name)) return "parameter names must start with a letter and contain only letters, numbers, underscore, and hyphen";
++  return undefined;
++};
++
++export const shellQuote = (value: string): string => {
++  if (/^[A-Za-z0-9_/:=.,@%+-]+$/.test(value)) return value;
++  return `'${value.replaceAll("'", "'\\''")}'`;
++};
++
++export const formatCommand = (tokens: string[]): string => tokens.map(shellQuote).join(" ");
++
++export const readManagedAliases = async (): Promise<ManagedAlias[]> => {
++  try {
++    const raw = await fsAsync.readFile(storePath, "utf-8");
++    const parsed = JSON.parse(raw);
++    if (parsed?.version !== 1 || !Array.isArray(parsed.aliases)) return [];
++    return parsed.aliases.filter((alias: Partial<ManagedAlias>) => typeof alias.name === "string" && Array.isArray(alias.tokens));
++  } catch {
++    return [];
++  }
++};
++
++export const writeManagedAlias = async (alias: Omit<ManagedAlias, "createdAt" | "updatedAt">): Promise<ManagedAlias> => {
++  const aliases = await readManagedAliases();
++  const now = Date.now();
++  const existing = aliases.find((candidate) => candidate.name === alias.name);
++  const saved: ManagedAlias = {
++    ...alias,
++    createdAt: existing?.createdAt ?? now,
++    updatedAt: now,
++  };
++  const next = [saved, ...aliases.filter((candidate) => candidate.name !== alias.name)].sort((a, b) => a.name.localeCompare(b.name));
++  await fsAsync.mkdir(allResourcesPath, { recursive: true });
++  await fsAsync.writeFile(storePath, JSON.stringify({ ...emptyStore(), aliases: next }, null, 2) + "\n");
++  return saved;
++};
++
++export const removeManagedAlias = async (name: string): Promise<boolean> => {
++  const aliases = await readManagedAliases();
++  const next = aliases.filter((alias) => alias.name !== name);
++  if (next.length === aliases.length) return false;
++  await fsAsync.mkdir(allResourcesPath, { recursive: true });
++  await fsAsync.writeFile(storePath, JSON.stringify({ ...emptyStore(), aliases: next }, null, 2) + "\n");
++  return true;
++};
++
++export const getManagedAlias = async (name: string): Promise<ManagedAlias | undefined> => {
++  const aliases = await readManagedAliases();
++  return aliases.find((alias) => alias.name === name);
++};
++
++export const recentCommands = async (limit = 20): Promise<string[]> => {
++  let raw: string;
++  try {
++    raw = await fsAsync.readFile(frecencyPath, "utf-8");
++  } catch {
++    return [];
++  }
++
++  const seen = new Map<string, number>();
++  for (const line of raw.split("\n")) {
++    if (!line) continue;
++    try {
++      const parsed = JSON.parse(line);
++      if (typeof parsed.k !== "string" || typeof parsed.t !== "number") continue;
++      if (parsed.k.split(/\s+/).length < 2) continue;
++      seen.set(parsed.k, Math.max(seen.get(parsed.k) ?? 0, parsed.t));
++    } catch {
++      continue;
++    }
++  }
++
++  return [...seen.entries()]
++    .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
++    .map(([command]) => command)
++    .slice(0, limit);
++};
++
++export const renderManagedAliasInit = async (shell: Shell): Promise<string> => {
++  if (shell !== Shell.Bash && shell !== Shell.Zsh) {
++    throw new Error(`managed aliases are only supported for bash and zsh`);
++  }
++
++  const aliases = await readManagedAliases();
++  const lines = [
++    "# termauto managed aliases",
++    "# Generated by `termauto alias init`; edit with `termauto alias set/remove`.",
++  ];
++  for (const alias of aliases) {
++    lines.push(`${alias.name}() {`);
++    lines.push(`  command ${shellQuote(launcherName())} alias run ${shellQuote(alias.name)} "$@"`);
++    lines.push("}");
++  }
++  return lines.join("\n") + "\n";
++};
++
++export const executeManagedAlias = async (alias: ManagedAlias, parameterValues: string[], printOnly: boolean): Promise<number> => {
++  if (alias.tokens.length === 0) throw new Error(`alias '${alias.name}' has no command tokens`);
++
++  const values = new Map<number, string>();
++  let nextArg = 0;
++  let rl: readline.Interface | undefined;
++  try {
++    for (const parameter of alias.parameters) {
++      let value = parameterValues[nextArg++];
++      if (value == null) {
++        rl ??= readline.createInterface({ input, output });
++        const answer = await rl.question(`${parameter.name} [${parameter.defaultValue}]: `);
++        value = answer.length > 0 ? answer : parameter.defaultValue;
++      }
++      values.set(parameter.tokenIndex, value);
++    }
++  } finally {
++    rl?.close();
++  }
++
++  const tokens = alias.tokens.map((token, index) => values.get(index) ?? token);
++  if (printOnly) {
++    process.stdout.write(formatCommand(tokens) + "\n");
++    return 0;
++  }
++
++  const child = childProcess.spawn(tokens[0], tokens.slice(1), { stdio: "inherit" });
++  return await new Promise((resolve) => {
++    child.on("error", (error) => {
++      process.stderr.write(`termauto alias: ${error.message}\n`);
++      resolve(127);
++    });
++    child.on("exit", (code, signal) => {
++      if (signal) resolve(128);
++      else resolve(code ?? 1);
++    });
++  });
++};
+-- 
+2.51.0
+

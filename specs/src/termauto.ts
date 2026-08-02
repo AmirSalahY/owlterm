@@ -70,6 +70,53 @@ const spec: Fig.Spec = {
       options: [helpOption],
     },
     {
+      name: "alias",
+      description: "Manage parameterized command aliases",
+      subcommands: [
+        {
+          name: "set",
+          description: "Save a parameterized alias from a command or recent command",
+          args: [
+            { name: "name", description: "Alias command name" },
+            {
+              name: "command",
+              description: "Command tokens; use -- before commands with flags",
+              isCommand: true,
+              isOptional: true,
+              isVariadic: true,
+            },
+          ],
+          options: [
+            {
+              name: ["-p", "--param"],
+              description: "Mark a token number as a parameter, e.g. 3=first-url",
+              args: { name: "token=name" },
+              isRepeatable: true,
+            },
+            helpOption,
+          ],
+        },
+        {
+          name: "run",
+          description: "Run a managed alias, prompting for missing parameter values",
+          args: [
+            { name: "name", description: "Alias command name" },
+            { name: "values", description: "Parameter values", isOptional: true, isVariadic: true },
+          ],
+          options: [{ name: "--print", description: "Print the expanded command instead of running it" }, helpOption],
+        },
+        { name: "list", description: "List managed aliases", options: [helpOption] },
+        { name: ["remove", "rm"], description: "Remove a managed alias", args: { name: "name" }, options: [helpOption] },
+        {
+          name: "init",
+          description: "Print bash/zsh functions for all managed aliases",
+          args: { name: "shell", suggestions: aliasShells, isOptional: true },
+          options: [helpOption],
+        },
+      ],
+      options: [helpOption],
+    },
+    {
       name: "complete",
       description: "Print the completion for a command line, as JSON",
       args: {

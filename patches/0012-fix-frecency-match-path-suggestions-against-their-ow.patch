@@ -1,7 +1,7 @@
-From fb9dfb227544d3da6498a2fb011078830f4510a3 Mon Sep 17 00:00:00 2001
+From 2db8c33f30f7332c94012ec03fe9b0b7ec62680f Mon Sep 17 00:00:00 2001
 From: AmirSalahY <hello@noury.ch>
 Date: Sun, 2 Aug 2026 16:40:54 +0300
-Subject: [PATCH 12/15] fix(frecency): match path suggestions against their own
+Subject: [PATCH 12/19] fix(frecency): match path suggestions against their own
  history
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -20,7 +20,6 @@ writes are fire-and-forget, so the previous save-and-restore lost the race — a
 append could land after the restore, leaving real history polluted or, if a run
 was interrupted, gone. constants.ts now honours ISTERM_RESOURCES_DIR and the
 tests point it at a scratch directory.
-
 ---
  .gitignore                 |   4 +++-
  jest.config.cjs            |   7 ++++++

@@ -1,0 +1,763 @@
+From fad75b7fb850c58441b89ae2949e5df183e25e81 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Sun, 2 Aug 2026 19:40:33 +0300
+Subject: [PATCH 19/19] feat(config): load defaults from root config file
+
+---
+ src/utils/config.ts | 691 +++++++++++++++++++++-----------------------
+ 1 file changed, 331 insertions(+), 360 deletions(-)
+
+diff --git a/src/utils/config.ts b/src/utils/config.ts
+index f256c18..c6ae61f 100644
+--- a/src/utils/config.ts
++++ b/src/utils/config.ts
+@@ -1,30 +1,31 @@
+ // Copyright (c) Microsoft Corporation.
+ // Licensed under the MIT License.
+ 
+-import os from "node:os";
+-import path from "node:path";
++import _Ajv, { JSONSchemaType } from "ajv";
++import { Command } from "commander";
+ import fs from "node:fs";
+ import fsAsync from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import { fileURLToPath } from "node:url";
+ import toml from "toml";
+-import _Ajv, { JSONSchemaType } from "ajv";
+-import { Command } from "commander";
+ import { allResourcesPath } from "./constants.js";
+ 
+ const Ajv = _Ajv as unknown as typeof _Ajv.default;
+ const ajv = new Ajv();
+ 
+ export type Binding = {
+-  shift?: boolean;
+-  control?: boolean;
+-  /**
+-   * Alt/Option. Terminals send these as ESC-prefixed sequences, which readline
+-   * reports as `meta`. Only alt+letter, alt+digit and alt+return survive that
+-   * round trip with a usable key name — alt+punctuation arrives nameless, and
+-   * alt+[ is indistinguishable from the start of a CSI escape. The defaults below
+-   * stay inside the usable set for that reason.
+-   */
+-  meta?: boolean;
+-  key: string;
++	shift?: boolean;
++	control?: boolean;
++	/**
++	 * Alt/Option. Terminals send these as ESC-prefixed sequences, which readline
++	 * reports as `meta`. Only alt+letter, alt+digit and alt+return survive that
++	 * round trip with a usable key name — alt+punctuation arrives nameless, and
++	 * alt+[ is indistinguishable from the start of a CSI escape. The defaults below
++	 * stay inside the usable set for that reason.
++	 */
++	meta?: boolean;
++	key: string;
+ };
+ 
+ /**
+@@ -57,43 +58,43 @@ export type SortMethod = "lastUsed" | "frecency" | "recency" | "alphabetical" |
+ export type IconStyle = "auto" | "codicon" | "nerd" | "unicode" | "emoji" | "none";
+ 
+ type Theme = {
+-  /** Box-drawing border colour. The engine always supported this but never set it. */
+-  border: string;
+-  /**
+-   * Lit edge along the top/left of the box. Glass panels catch light on the near
+-   * edge; a single flat border colour reads as a flat rectangle instead.
+-   */
+-  borderHighlight: string;
+-  activeBackground: string;
+-  activeForeground: string;
+-  /** Unselected row text. */
+-  foreground: string;
+-  /** Icon column on unselected rows — dimmer than the label so names stay dominant. */
+-  icon: string;
+-  /** Description panel text — dimmed so the suggestion list stays dominant. */
+-  description: string;
+-  /** Marker in the selected row's gutter. Must be 1 cell wide to keep alignment. */
+-  pointer: string;
+-  /** "rounded" mimics a native macOS menu; "square" is the classic box. */
+-  corners: "rounded" | "square";
+-  /**
+-   * Body fill. "clear" paints nothing, so the terminal shows through and the
+-   * terminal's own transparency + blur becomes the menu's frosted backdrop —
+-   * ANSI has no blur of its own, so this is the only real glass available. A hex
+-   * value paints a flat tint instead, for opaque terminals.
+-   */
+-  surface: string;
+-  /** Icon set. See IconStyle. */
+-  icons: IconStyle;
+-  /**
+-   * Tint each unselected row by what it is — a folder, a file, a subcommand.
+-   *
+-   * The master switch for `types` below. Off falls every row back to
+-   * `foreground`, which is the pre-existing single-colour look.
+-   */
+-  colorByType: boolean;
+-  /** Per-kind row colours. See TypeColors. */
+-  types: TypeColors;
++	/** Box-drawing border colour. The engine always supported this but never set it. */
++	border: string;
++	/**
++	 * Lit edge along the top/left of the box. Glass panels catch light on the near
++	 * edge; a single flat border colour reads as a flat rectangle instead.
++	 */
++	borderHighlight: string;
++	activeBackground: string;
++	activeForeground: string;
++	/** Unselected row text. */
++	foreground: string;
++	/** Icon column on unselected rows — dimmer than the label so names stay dominant. */
++	icon: string;
++	/** Description panel text — dimmed so the suggestion list stays dominant. */
++	description: string;
++	/** Marker in the selected row's gutter. Must be 1 cell wide to keep alignment. */
++	pointer: string;
++	/** "rounded" mimics a native macOS menu; "square" is the classic box. */
++	corners: "rounded" | "square";
++	/**
++	 * Body fill. "clear" paints nothing, so the terminal shows through and the
++	 * terminal's own transparency + blur becomes the menu's frosted backdrop —
++	 * ANSI has no blur of its own, so this is the only real glass available. A hex
++	 * value paints a flat tint instead, for opaque terminals.
++	 */
++	surface: string;
++	/** Icon set. See IconStyle. */
++	icons: IconStyle;
++	/**
++	 * Tint each unselected row by what it is — a folder, a file, a subcommand.
++	 *
++	 * The master switch for `types` below. Off falls every row back to
++	 * `foreground`, which is the pre-existing single-colour look.
++	 */
++	colorByType: boolean;
++	/** Per-kind row colours. See TypeColors. */
++	types: TypeColors;
+ };
+ 
+ /**
+@@ -109,188 +110,188 @@ type Theme = {
+  * Missing or empty entries fall back to `foreground`.
+  */
+ type TypeColors = {
+-  folder: string;
+-  file: string;
+-  subcommand: string;
+-  option: string;
+-  arg: string;
+-  special: string;
+-  shortcut: string;
+-  mixin: string;
++	folder: string;
++	file: string;
++	subcommand: string;
++	option: string;
++	arg: string;
++	special: string;
++	shortcut: string;
++	mixin: string;
+ };
+ 
+ type Config = {
+-  bindings: {
+-    nextSuggestion: Binding;
+-    previousSuggestion: Binding;
+-    dismissSuggestions: Binding;
+-    acceptSuggestion: Binding;
+-    /** Insert the longest prefix common to every suggestion — classic shell completion. */
+-    insertCommonPrefix: Binding;
+-    /** Accept the highlighted suggestion and run the line in one keystroke. */
+-    executeSelected: Binding;
+-    /** Show/hide the description panel without closing the menu. */
+-    toggleDescription: Binding;
+-    /** Grow/shrink the visible suggestion count for this session. */
+-    increaseSize: Binding;
+-    decreaseSize: Binding;
+-  };
+-  /**
+-   * Modifier for jump-to-Nth-suggestion (Q's selectSuggestion1..10). "off"
+-   * disables it. Only "alt" is offered: ctrl+digit produces no distinct sequence
+-   * in a terminal, and bare digits are ordinary input.
+-   */
+-  selectSuggestionModifier: "alt" | "off";
+-  /** Per-key accept behaviour. See KeyMode. */
+-  keys: {
+-    tab: KeyMode;
+-    enter: KeyMode;
+-    rightArrow: KeyMode;
+-  };
+-  /** See SortMethod. */
+-  sortMethod: SortMethod;
+-  /** @deprecated superseded by `keys.enter`; still honoured for existing configs. */
+-  acceptOnEnter: boolean;
+-  /** @deprecated superseded by `keys.rightArrow`. */
+-  acceptOnRightArrow: boolean;
+-  theme: Theme;
+-  specs: {
+-    path: string[];
+-  };
+-  useAliases: boolean;
+-  useNerdFont: boolean;
+-  maxSuggestions?: number;
+-  /** Rank suggestions by how often/recently they were run in this directory. */
+-  useFrecency: boolean;
++	bindings: {
++		nextSuggestion: Binding;
++		previousSuggestion: Binding;
++		dismissSuggestions: Binding;
++		acceptSuggestion: Binding;
++		/** Insert the longest prefix common to every suggestion — classic shell completion. */
++		insertCommonPrefix: Binding;
++		/** Accept the highlighted suggestion and run the line in one keystroke. */
++		executeSelected: Binding;
++		/** Show/hide the description panel without closing the menu. */
++		toggleDescription: Binding;
++		/** Grow/shrink the visible suggestion count for this session. */
++		increaseSize: Binding;
++		decreaseSize: Binding;
++	};
++	/**
++	 * Modifier for jump-to-Nth-suggestion (Q's selectSuggestion1..10). "off"
++	 * disables it. Only "alt" is offered: ctrl+digit produces no distinct sequence
++	 * in a terminal, and bare digits are ordinary input.
++	 */
++	selectSuggestionModifier: "alt" | "off";
++	/** Per-key accept behaviour. See KeyMode. */
++	keys: {
++		tab: KeyMode;
++		enter: KeyMode;
++		rightArrow: KeyMode;
++	};
++	/** See SortMethod. */
++	sortMethod: SortMethod;
++	/** @deprecated superseded by `keys.enter`; still honoured for existing configs. */
++	acceptOnEnter: boolean;
++	/** @deprecated superseded by `keys.rightArrow`. */
++	acceptOnRightArrow: boolean;
++	theme: Theme;
++	specs: {
++		path: string[];
++	};
++	useAliases: boolean;
++	useNerdFont: boolean;
++	maxSuggestions?: number;
++	/** Rank suggestions by how often/recently they were run in this directory. */
++	useFrecency: boolean;
+ };
+ 
+ const bindingSchema: JSONSchemaType<Binding> = {
+-  type: "object",
+-  nullable: true,
+-  properties: {
+-    shift: { type: "boolean", nullable: true },
+-    control: { type: "boolean", nullable: true },
+-    meta: { type: "boolean", nullable: true },
+-    key: { type: "string" },
+-  },
+-  required: ["key"],
++	type: "object",
++	nullable: true,
++	properties: {
++		shift: { type: "boolean", nullable: true },
++		control: { type: "boolean", nullable: true },
++		meta: { type: "boolean", nullable: true },
++		key: { type: "string" },
++	},
++	required: ["key"],
+ };
+ 
+ const keyModeSchema = { type: "string", nullable: true, enum: ["insert", "insertOrPrefix", "ignore"] };
+ 
+ const specPathsSchema: JSONSchemaType<string[]> = {
+-  type: "array",
+-  items: { type: "string" },
+-  nullable: true,
++	type: "array",
++	items: { type: "string" },
++	nullable: true,
+ };
+ 
+ const configSchema = {
+-  type: "object",
+-  nullable: true,
+-  properties: {
+-    bindings: {
+-      type: "object",
+-      nullable: true,
+-      properties: {
+-        nextSuggestion: bindingSchema,
+-        previousSuggestion: bindingSchema,
+-        dismissSuggestions: bindingSchema,
+-        acceptSuggestion: bindingSchema,
+-        insertCommonPrefix: bindingSchema,
+-        executeSelected: bindingSchema,
+-        toggleDescription: bindingSchema,
+-        increaseSize: bindingSchema,
+-        decreaseSize: bindingSchema,
+-      },
+-      additionalProperties: false,
+-    },
+-    selectSuggestionModifier: { type: "string", nullable: true, enum: ["alt", "off"] },
+-    keys: {
+-      type: "object",
+-      nullable: true,
+-      properties: { tab: keyModeSchema, enter: keyModeSchema, rightArrow: keyModeSchema },
+-      additionalProperties: false,
+-    },
+-    sortMethod: { type: "string", nullable: true, enum: ["lastUsed", "frecency", "recency", "alphabetical", "none"] },
+-    specs: {
+-      type: "object",
+-      nullable: true,
+-      properties: {
+-        path: specPathsSchema,
+-      },
+-      // Without this, a top-level key written *below* the [specs] header — which
+-      // TOML scopes into the table, not the document root — validates fine and is
+-      // then silently ignored. maxSuggestions sat dead in a generated config that
+-      // way. Fail loudly instead.
+-      additionalProperties: false,
+-    },
+-    useAliases: {
+-      type: "boolean",
+-      nullable: true,
+-      default: false,
+-    },
+-    useNerdFont: {
+-      type: "boolean",
+-      nullable: true,
+-      default: false,
+-    },
+-    maxSuggestions: {
+-      type: "number",
+-      nullable: true,
+-      default: 5,
+-    },
+-    useFrecency: {
+-      type: "boolean",
+-      nullable: true,
+-      default: true,
+-    },
+-    acceptOnEnter: {
+-      type: "boolean",
+-      nullable: true,
+-      default: true,
+-    },
+-    acceptOnRightArrow: {
+-      type: "boolean",
+-      nullable: true,
+-      default: true,
+-    },
+-    theme: {
+-      type: "object",
+-      nullable: true,
+-      properties: {
+-        border: { type: "string", nullable: true },
+-        borderHighlight: { type: "string", nullable: true },
+-        activeBackground: { type: "string", nullable: true },
+-        activeForeground: { type: "string", nullable: true },
+-        foreground: { type: "string", nullable: true },
+-        icon: { type: "string", nullable: true },
+-        description: { type: "string", nullable: true },
+-        pointer: { type: "string", nullable: true },
+-        corners: { type: "string", nullable: true, enum: ["rounded", "square"] },
+-        surface: { type: "string", nullable: true },
+-        icons: { type: "string", nullable: true, enum: ["auto", "codicon", "nerd", "unicode", "emoji", "none"] },
+-        colorByType: { type: "boolean", nullable: true },
+-        types: {
+-          type: "object",
+-          nullable: true,
+-          properties: {
+-            folder: { type: "string", nullable: true },
+-            file: { type: "string", nullable: true },
+-            subcommand: { type: "string", nullable: true },
+-            option: { type: "string", nullable: true },
+-            arg: { type: "string", nullable: true },
+-            special: { type: "string", nullable: true },
+-            shortcut: { type: "string", nullable: true },
+-            mixin: { type: "string", nullable: true },
+-          },
+-          // The keys are Fig.SuggestionType values, not free text — a typo like
+-          // `directory = "#fff"` would otherwise parse fine and colour nothing.
+-          additionalProperties: false,
+-        },
+-      },
+-    },
+-  },
+-  additionalProperties: false,
++	type: "object",
++	nullable: true,
++	properties: {
++		bindings: {
++			type: "object",
++			nullable: true,
++			properties: {
++				nextSuggestion: bindingSchema,
++				previousSuggestion: bindingSchema,
++				dismissSuggestions: bindingSchema,
++				acceptSuggestion: bindingSchema,
++				insertCommonPrefix: bindingSchema,
++				executeSelected: bindingSchema,
++				toggleDescription: bindingSchema,
++				increaseSize: bindingSchema,
++				decreaseSize: bindingSchema,
++			},
++			additionalProperties: false,
++		},
++		selectSuggestionModifier: { type: "string", nullable: true, enum: ["alt", "off"] },
++		keys: {
++			type: "object",
++			nullable: true,
++			properties: { tab: keyModeSchema, enter: keyModeSchema, rightArrow: keyModeSchema },
++			additionalProperties: false,
++		},
++		sortMethod: { type: "string", nullable: true, enum: ["lastUsed", "frecency", "recency", "alphabetical", "none"] },
++		specs: {
++			type: "object",
++			nullable: true,
++			properties: {
++				path: specPathsSchema,
++			},
++			// Without this, a top-level key written *below* the [specs] header — which
++			// TOML scopes into the table, not the document root — validates fine and is
++			// then silently ignored. maxSuggestions sat dead in a generated config that
++			// way. Fail loudly instead.
++			additionalProperties: false,
++		},
++		useAliases: {
++			type: "boolean",
++			nullable: true,
++			default: false,
++		},
++		useNerdFont: {
++			type: "boolean",
++			nullable: true,
++			default: false,
++		},
++		maxSuggestions: {
++			type: "number",
++			nullable: true,
++			default: 5,
++		},
++		useFrecency: {
++			type: "boolean",
++			nullable: true,
++			default: true,
++		},
++		acceptOnEnter: {
++			type: "boolean",
++			nullable: true,
++			default: true,
++		},
++		acceptOnRightArrow: {
++			type: "boolean",
++			nullable: true,
++			default: true,
++		},
++		theme: {
++			type: "object",
++			nullable: true,
++			properties: {
++				border: { type: "string", nullable: true },
++				borderHighlight: { type: "string", nullable: true },
++				activeBackground: { type: "string", nullable: true },
++				activeForeground: { type: "string", nullable: true },
++				foreground: { type: "string", nullable: true },
++				icon: { type: "string", nullable: true },
++				description: { type: "string", nullable: true },
++				pointer: { type: "string", nullable: true },
++				corners: { type: "string", nullable: true, enum: ["rounded", "square"] },
++				surface: { type: "string", nullable: true },
++				icons: { type: "string", nullable: true, enum: ["auto", "codicon", "nerd", "unicode", "emoji", "none"] },
++				colorByType: { type: "boolean", nullable: true },
++				types: {
++					type: "object",
++					nullable: true,
++					properties: {
++						folder: { type: "string", nullable: true },
++						file: { type: "string", nullable: true },
++						subcommand: { type: "string", nullable: true },
++						option: { type: "string", nullable: true },
++						arg: { type: "string", nullable: true },
++						special: { type: "string", nullable: true },
++						shortcut: { type: "string", nullable: true },
++						mixin: { type: "string", nullable: true },
++					},
++					// The keys are Fig.SuggestionType values, not free text — a typo like
++					// `directory = "#fff"` would otherwise parse fine and colour nothing.
++					additionalProperties: false,
++				},
++			},
++		},
++	},
++	additionalProperties: false,
+ };
+ 
+ const rcFile = ".inshellisenserc";
+@@ -300,151 +301,121 @@ const xdgPath = path.join(os.homedir(), ".config", "inshellisense", xdgFile);
+ 
+ const configPaths = [rcPath, xdgPath];
+ 
+-let globalConfig: Config = {
+-  bindings: {
+-    nextSuggestion: { key: "down" },
+-    previousSuggestion: { key: "up" },
+-    acceptSuggestion: { key: "tab" },
+-    dismissSuggestions: { key: "escape" },
+-    // alt+letter throughout: these only bind while the menu is open, so the
+-    // readline meanings they shadow (alt+d kill-word, and so on) stay reachable
+-    // whenever there is nothing to complete.
+-    insertCommonPrefix: { key: "i", meta: true },
+-    executeSelected: { key: "return", meta: true },
+-    toggleDescription: { key: "d", meta: true },
+-    increaseSize: { key: "l", meta: true }, // l for larger — alt+= has no key name
+-    decreaseSize: { key: "s", meta: true }, // s for smaller
+-  },
+-  selectSuggestionModifier: "alt",
+-  keys: {
+-    tab: "insert",
+-    enter: "insert",
+-    rightArrow: "insert",
+-  },
+-  sortMethod: "frecency",
+-  specs: {
+-    path: [],
+-  },
+-  useAliases: false,
+-  useNerdFont: false,
+-  useFrecency: true,
+-  acceptOnEnter: true,
+-  acceptOnRightArrow: true,
+-  // Modelled on a frosted native macOS menu: hairline border lit along the top
+-  // and left edge, systemBlue selection, rounded corners, and a clear body so the
+-  // terminal's own transparency/blur shows through as the frost.
+-  theme: {
+-    border: "#2C2C2E",
+-    borderHighlight: "#48484A",
+-    activeBackground: "#0A84FF",
+-    activeForeground: "#FFFFFF",
+-    foreground: "#E5E5EA",
+-    icon: "#8E8E93",
+-    description: "#98989D",
+-    pointer: "›",
+-    corners: "rounded",
+-    surface: "clear",
+-    icons: "auto",
+-    colorByType: true,
+-    // Apple's system palette, so the tints sit alongside activeBackground
+-    // (systemBlue) rather than clashing with it. systemTeal for folders rather
+-    // than systemBlue itself: the selection bar is already blue, and a blue label
+-    // on a blue bar is the one combination that loses information.
+-    types: {
+-      folder: "#A6C8DC", // lighter blue-teal
+-      file: "", // baseline; falls back to foreground
+-      subcommand: "#97D6A9", // lighter green
+-      option: "#CFB6E3", // lighter purple
+-      arg: "#C1C1C6", // lighter gray
+-      special: "#FFDCA8", // lighter orange
+-      shortcut: "#FFDCA8",
+-      mixin: "#FFDCA8",
+-    },
+-  },
++const defaultConfigFile = "termauto.config.json";
++
++const findDefaultConfigPath = (): string => {
++	const configured = process.env.TERMAUTO_DEFAULT_CONFIG;
++	if (configured && fs.existsSync(configured)) return configured;
++
++	let dir = path.dirname(fileURLToPath(import.meta.url));
++	for (;;) {
++		const candidate = path.join(dir, defaultConfigFile);
++		if (fs.existsSync(candidate)) return candidate;
++		const parent = path.dirname(dir);
++		if (parent === dir) break;
++		dir = parent;
++	}
++	throw new Error(`termauto default config not found: set TERMAUTO_DEFAULT_CONFIG or add ${defaultConfigFile} at the repository root`);
+ };
+ 
++const cloneConfig = (config: Config): Config => JSON.parse(JSON.stringify(config)) as Config;
++
++const readDefaultConfig = (): Config => {
++	const configPath = findDefaultConfigPath();
++	const config = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Config;
++	const isValid = ajv.validate(configSchema, config);
++	if (!isValid) {
++		throw new Error(`${configPath} is invalid: ${ajv.errorsText()}`);
++	}
++	return config;
++};
++
++const defaultConfig = readDefaultConfig();
++let globalConfig: Config = cloneConfig(defaultConfig);
++
+ export const getConfig = (): Config => globalConfig;
+ export const loadConfig = async (program: Command) => {
+-  for (const configPath of configPaths) {
+-    if (fs.existsSync(configPath)) {
+-      let config: Config;
+-      try {
+-        config = toml.parse((await fsAsync.readFile(configPath)).toString());
+-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+-      } catch (e: any) {
+-        program.error(`${configPath} is invalid toml. Parsing error on line ${e.line}, column ${e.column}: ${e.message}`);
+-      }
+-      const isValid = ajv.validate(configSchema, config);
+-      if (!isValid) {
+-        program.error(`${configPath} is invalid: ${ajv.errorsText()}`);
+-      }
+-      globalConfig = {
+-        bindings: {
+-          nextSuggestion: config?.bindings?.nextSuggestion ?? globalConfig.bindings.nextSuggestion,
+-          previousSuggestion: config?.bindings?.previousSuggestion ?? globalConfig.bindings.previousSuggestion,
+-          acceptSuggestion: config?.bindings?.acceptSuggestion ?? globalConfig.bindings.acceptSuggestion,
+-          insertCommonPrefix: config?.bindings?.insertCommonPrefix ?? globalConfig.bindings.insertCommonPrefix,
+-          executeSelected: config?.bindings?.executeSelected ?? globalConfig.bindings.executeSelected,
+-          toggleDescription: config?.bindings?.toggleDescription ?? globalConfig.bindings.toggleDescription,
+-          increaseSize: config?.bindings?.increaseSize ?? globalConfig.bindings.increaseSize,
+-          decreaseSize: config?.bindings?.decreaseSize ?? globalConfig.bindings.decreaseSize,
+-          dismissSuggestions: config?.bindings?.dismissSuggestions ?? globalConfig.bindings.dismissSuggestions,
+-        },
+-        specs: {
+-          path: [...(config?.specs?.path ?? [])],
+-        },
+-        useAliases: config.useAliases ?? false,
+-        useNerdFont: config?.useNerdFont ?? false,
+-        maxSuggestions: config?.maxSuggestions ?? 5,
+-        useFrecency: config?.useFrecency ?? true,
+-        acceptOnEnter: config?.acceptOnEnter ?? true,
+-        acceptOnRightArrow: config?.acceptOnRightArrow ?? true,
+-        selectSuggestionModifier: config?.selectSuggestionModifier ?? globalConfig.selectSuggestionModifier,
+-        // useFrecency predates sortMethod and only ever meant on/off. An explicit
+-        // sortMethod wins; `useFrecency = false` still means "no usage ranking".
+-        sortMethod: config?.sortMethod ?? (config?.useFrecency === false ? "none" : globalConfig.sortMethod),
+-        keys: {
+-          // The booleans said accept-or-nothing. "ignore" is the false case.
+-          tab: config?.keys?.tab ?? globalConfig.keys.tab,
+-          enter: config?.keys?.enter ?? (config?.acceptOnEnter === false ? "ignore" : globalConfig.keys.enter),
+-          rightArrow: config?.keys?.rightArrow ?? (config?.acceptOnRightArrow === false ? "ignore" : globalConfig.keys.rightArrow),
+-        },
+-        // Per-key fallback so overriding one colour doesn't blank the rest.
+-        theme: {
+-          border: config?.theme?.border ?? globalConfig.theme.border,
+-          borderHighlight: config?.theme?.borderHighlight ?? globalConfig.theme.borderHighlight,
+-          activeBackground: config?.theme?.activeBackground ?? globalConfig.theme.activeBackground,
+-          activeForeground: config?.theme?.activeForeground ?? globalConfig.theme.activeForeground,
+-          foreground: config?.theme?.foreground ?? globalConfig.theme.foreground,
+-          icon: config?.theme?.icon ?? globalConfig.theme.icon,
+-          description: config?.theme?.description ?? globalConfig.theme.description,
+-          pointer: config?.theme?.pointer ?? globalConfig.theme.pointer,
+-          corners: config?.theme?.corners ?? globalConfig.theme.corners,
+-          surface: config?.theme?.surface ?? globalConfig.theme.surface,
+-          // useNerdFont predates theme.icons and only ever gated fig:// icon URLs.
+-          // Honoured as a shorthand so existing rc files keep working.
+-          icons: config?.theme?.icons ?? (config?.useNerdFont ? "codicon" : globalConfig.theme.icons),
+-          colorByType: config?.theme?.colorByType ?? globalConfig.theme.colorByType,
+-          // Also per-key: recolouring folders alone must not blank the other kinds.
+-          types: {
+-            folder: config?.theme?.types?.folder ?? globalConfig.theme.types.folder,
+-            file: config?.theme?.types?.file ?? globalConfig.theme.types.file,
+-            subcommand: config?.theme?.types?.subcommand ?? globalConfig.theme.types.subcommand,
+-            option: config?.theme?.types?.option ?? globalConfig.theme.types.option,
+-            arg: config?.theme?.types?.arg ?? globalConfig.theme.types.arg,
+-            special: config?.theme?.types?.special ?? globalConfig.theme.types.special,
+-            shortcut: config?.theme?.types?.shortcut ?? globalConfig.theme.types.shortcut,
+-            mixin: config?.theme?.types?.mixin ?? globalConfig.theme.types.mixin,
+-          },
+-        },
+-      };
+-    }
+-  }
+-  globalConfig.specs = { path: [path.join(os.homedir(), ".fig", "autocomplete", "build"), ...(globalConfig.specs?.path ?? [])] };
++	globalConfig = cloneConfig(defaultConfig);
++	for (const configPath of configPaths) {
++		if (fs.existsSync(configPath)) {
++			let config: Config;
++			try {
++				config = toml.parse((await fsAsync.readFile(configPath)).toString());
++				// eslint-disable-next-line @typescript-eslint/no-explicit-any
++			} catch (e: any) {
++				program.error(`${configPath} is invalid toml. Parsing error on line ${e.line}, column ${e.column}: ${e.message}`);
++			}
++			const isValid = ajv.validate(configSchema, config);
++			if (!isValid) {
++				program.error(`${configPath} is invalid: ${ajv.errorsText()}`);
++			}
++			globalConfig = {
++				bindings: {
++					nextSuggestion: config?.bindings?.nextSuggestion ?? globalConfig.bindings.nextSuggestion,
++					previousSuggestion: config?.bindings?.previousSuggestion ?? globalConfig.bindings.previousSuggestion,
++					acceptSuggestion: config?.bindings?.acceptSuggestion ?? globalConfig.bindings.acceptSuggestion,
++					insertCommonPrefix: config?.bindings?.insertCommonPrefix ?? globalConfig.bindings.insertCommonPrefix,
++					executeSelected: config?.bindings?.executeSelected ?? globalConfig.bindings.executeSelected,
++					toggleDescription: config?.bindings?.toggleDescription ?? globalConfig.bindings.toggleDescription,
++					increaseSize: config?.bindings?.increaseSize ?? globalConfig.bindings.increaseSize,
++					decreaseSize: config?.bindings?.decreaseSize ?? globalConfig.bindings.decreaseSize,
++					dismissSuggestions: config?.bindings?.dismissSuggestions ?? globalConfig.bindings.dismissSuggestions,
++				},
++				specs: {
++					path: [...(config?.specs?.path ?? [])],
++				},
++				useAliases: config?.useAliases ?? globalConfig.useAliases,
++				useNerdFont: config?.useNerdFont ?? globalConfig.useNerdFont,
++				maxSuggestions: config?.maxSuggestions ?? globalConfig.maxSuggestions,
++				useFrecency: config?.useFrecency ?? globalConfig.useFrecency,
++				acceptOnEnter: config?.acceptOnEnter ?? globalConfig.acceptOnEnter,
++				acceptOnRightArrow: config?.acceptOnRightArrow ?? globalConfig.acceptOnRightArrow,
++				selectSuggestionModifier: config?.selectSuggestionModifier ?? globalConfig.selectSuggestionModifier,
++				// useFrecency predates sortMethod and only ever meant on/off. An explicit
++				// sortMethod wins; `useFrecency = false` still means "no usage ranking".
++				sortMethod: config?.sortMethod ?? (config?.useFrecency === false ? "none" : globalConfig.sortMethod),
++				keys: {
++					// The booleans said accept-or-nothing. "ignore" is the false case.
++					tab: config?.keys?.tab ?? globalConfig.keys.tab,
++					enter: config?.keys?.enter ?? (config?.acceptOnEnter === false ? "ignore" : globalConfig.keys.enter),
++					rightArrow: config?.keys?.rightArrow ?? (config?.acceptOnRightArrow === false ? "ignore" : globalConfig.keys.rightArrow),
++				},
++				// Per-key fallback so overriding one colour doesn't blank the rest.
++				theme: {
++					border: config?.theme?.border ?? globalConfig.theme.border,
++					borderHighlight: config?.theme?.borderHighlight ?? globalConfig.theme.borderHighlight,
++					activeBackground: config?.theme?.activeBackground ?? globalConfig.theme.activeBackground,
++					activeForeground: config?.theme?.activeForeground ?? globalConfig.theme.activeForeground,
++					foreground: config?.theme?.foreground ?? globalConfig.theme.foreground,
++					icon: config?.theme?.icon ?? globalConfig.theme.icon,
++					description: config?.theme?.description ?? globalConfig.theme.description,
++					pointer: config?.theme?.pointer ?? globalConfig.theme.pointer,
++					corners: config?.theme?.corners ?? globalConfig.theme.corners,
++					surface: config?.theme?.surface ?? globalConfig.theme.surface,
++					// useNerdFont predates theme.icons and only ever gated fig:// icon URLs.
++					// Honoured as a shorthand so existing rc files keep working.
++					icons: config?.theme?.icons ?? (config?.useNerdFont ? "codicon" : globalConfig.theme.icons),
++					colorByType: config?.theme?.colorByType ?? globalConfig.theme.colorByType,
++					// Also per-key: recolouring folders alone must not blank the other kinds.
++					types: {
++						folder: config?.theme?.types?.folder ?? globalConfig.theme.types.folder,
++						file: config?.theme?.types?.file ?? globalConfig.theme.types.file,
++						subcommand: config?.theme?.types?.subcommand ?? globalConfig.theme.types.subcommand,
++						option: config?.theme?.types?.option ?? globalConfig.theme.types.option,
++						arg: config?.theme?.types?.arg ?? globalConfig.theme.types.arg,
++						special: config?.theme?.types?.special ?? globalConfig.theme.types.special,
++						shortcut: config?.theme?.types?.shortcut ?? globalConfig.theme.types.shortcut,
++						mixin: config?.theme?.types?.mixin ?? globalConfig.theme.types.mixin,
++					},
++				},
++			};
++		}
++	}
++	globalConfig.specs = { path: [path.join(os.homedir(), ".fig", "autocomplete", "build"), ...(globalConfig.specs?.path ?? [])] };
+ };
+ 
+ export const deleteCacheFolder = (): void => {
+-  if (fs.existsSync(allResourcesPath)) {
+-    fs.rmSync(allResourcesPath, { recursive: true });
+-  }
++	if (fs.existsSync(allResourcesPath)) {
++		fs.rmSync(allResourcesPath, { recursive: true });
++	}
+ };
+-- 
+2.51.0
+

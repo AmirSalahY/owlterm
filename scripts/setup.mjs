@@ -25,6 +25,8 @@ const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..")
 const VENDOR = path.join(ROOT, "vendor", "inshellisense");
 const PATCHES = path.join(ROOT, "patches");
 const SPECS_BUILD = path.join(ROOT, "specs", "build");
+const DEFAULT_CONFIG_PATH = path.join(ROOT, "termauto.config.json");
+const DEFAULT_CONFIG = JSON.parse(fs.readFileSync(DEFAULT_CONFIG_PATH, "utf-8"));
 
 /** The command name we install. Also baked into the generated shell init scripts. */
 const CMD = "termauto";
@@ -52,6 +54,7 @@ const die = (msg) => {
   console.error(`  \x1b[31m✗\x1b[0m ${msg}`);
   process.exit(1);
 };
+const tomlString = (value) => JSON.stringify(value);
 
 // ── 1. Node version ────────────────────────────────────────────────────────────
 step(1, "Checking Node version");
@@ -273,12 +276,12 @@ step(8, "Configuring specs path");
   // Document-root keys MUST come before the first [table] header. TOML scopes
   // everything after a header into that table, so `maxSuggestions` written below
   // [specs] parses as specs.maxSuggestions and is silently ignored.
-  const block = `maxSuggestions = 10
-useFrecency = true
+  const block = `maxSuggestions = ${DEFAULT_CONFIG.maxSuggestions}
+useFrecency = ${DEFAULT_CONFIG.useFrecency}
 
 [theme]
-icons = "auto"     # "auto" | "nerd" | "unicode" | "emoji" | "none"
-surface = "clear"  # "clear" lets your terminal's transparency/blur show through
+icons = ${tomlString(DEFAULT_CONFIG.theme.icons)}     # "auto" | "nerd" | "unicode" | "emoji" | "none"
+surface = ${tomlString(DEFAULT_CONFIG.theme.surface)}  # "clear" lets your terminal's transparency/blur show through
 
 [specs]
 path = ["${SPECS_BUILD}"]

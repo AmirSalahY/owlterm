@@ -1,7 +1,7 @@
-From 557c7c83a841a3fc44a46d56955ab6fc96174b2f Mon Sep 17 00:00:00 2001
+From f4d8c92f5029230b128330a4fb03d06ed25afecf Mon Sep 17 00:00:00 2001
 From: AmirSalahY <hello@noury.ch>
 Date: Sun, 2 Aug 2026 15:53:27 +0300
-Subject: [PATCH 10/15] chore: bump the Fig corpus to 2.692.3, and import it by
+Subject: [PATCH 10/19] chore: bump the Fig corpus to 2.692.3, and import it by
  bare specifier
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -15,7 +15,6 @@ works either side of the change.
 
 Gains 11 specs (herd, ollama, uv, eza, kotlinc, lvim, oci, ampx, sake, shasum,
 sqlmesh); nothing removed, and all 93 snapshots still pass.
-
 ---
  package-lock.json      | 346 ++++++++++-------------------------------
  package.json           |   2 +-

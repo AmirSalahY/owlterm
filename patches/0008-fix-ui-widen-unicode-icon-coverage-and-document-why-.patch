@@ -1,7 +1,7 @@
-From 42ac21d94e0bcf289aab8ac00a69e19404eb3b66 Mon Sep 17 00:00:00 2001
+From 0f1722f88540c7a676a95df45fbbfcd45017e0dd Mon Sep 17 00:00:00 2001
 From: AmirSalahY <hello@noury.ch>
 Date: Sun, 2 Aug 2026 12:56:54 +0300
-Subject: [PATCH 08/15] fix(ui): widen unicode icon coverage, and document why
+Subject: [PATCH 08/19] fix(ui): widen unicode icon coverage, and document why
  it is the safe set
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -20,7 +20,6 @@ claims it. That is why Codicons need their patched font selected in every
 terminal and unicode does not.
 
 Adds scripts/icon-check.sh to print all three sets raw in a given terminal.
-
 ---
  src/runtime/icons.ts                          | 17 +++--
  .../__snapshots__/runtime.test.ts.snap        | 72 +++++++++----------

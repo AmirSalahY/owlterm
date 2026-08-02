@@ -1,7 +1,7 @@
-From 5dd69e7a05d945a4d83ff8cc9842f7620c5a1f38 Mon Sep 17 00:00:00 2001
+From a6b9761d39a5feee08fc46006b3bcc1e19dbcb36 Mon Sep 17 00:00:00 2001
 From: AmirSalahY <amir@noury.ch>
 Date: Sun, 2 Aug 2026 18:26:19 +0300
-Subject: [PATCH 14/15] feat(ui): tint each row by what it is
+Subject: [PATCH 14/19] feat(ui): tint each row by what it is
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

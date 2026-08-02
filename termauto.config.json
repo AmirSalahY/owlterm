@@ -1,0 +1,53 @@
+{
+  "bindings": {
+    "nextSuggestion": { "key": "down" },
+    "previousSuggestion": { "key": "up" },
+    "acceptSuggestion": { "key": "tab" },
+    "dismissSuggestions": { "key": "escape" },
+    "insertCommonPrefix": { "key": "i", "meta": true },
+    "executeSelected": { "key": "return", "meta": true },
+    "toggleDescription": { "key": "d", "meta": true },
+    "increaseSize": { "key": "l", "meta": true },
+    "decreaseSize": { "key": "s", "meta": true }
+  },
+  "selectSuggestionModifier": "alt",
+  "keys": {
+    "tab": "insert",
+    "enter": "insert",
+    "rightArrow": "insert"
+  },
+  "sortMethod": "frecency",
+  "specs": {
+    "path": []
+  },
+  "useAliases": false,
+  "useNerdFont": false,
+  "maxSuggestions": 10,
+  "useFrecency": true,
+  "acceptOnEnter": true,
+  "acceptOnRightArrow": true,
+  "theme": {
+    "border": "#2C2C2E",
+    "borderHighlight": "#48484A",
+    "activeBackground": "#4274A7",
+    "activeForeground": "#FFFFFF",
+    "foreground": "#E5E5EA",
+    "icon": "#8E8E93",
+    "description": "#98989D",
+    "pointer": "›",
+    "corners": "rounded",
+    "surface": "clear",
+    "icons": "auto",
+    "colorByType": true,
+    "types": {
+      "folder": "#A6C8DC",
+      "file": "#7ED2C4",
+      "subcommand": "#97D6A9",
+      "option": "#CFB6E3",
+      "arg": "#C1C1C6",
+      "special": "#FFDCA8",
+      "shortcut": "#FFDCA8",
+      "mixin": "#FFDCA8"
+    }
+  }
+}
