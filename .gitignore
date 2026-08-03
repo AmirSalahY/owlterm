@@ -20,4 +20,7 @@ node_modules/
 *.log
 .DS_Store
 
+# local agent instructions (AGENTS.md is the source; CLAUDE.md imports it)
+AGENTS.md
 Agents.md
+CLAUDE.md
