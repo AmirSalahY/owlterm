@@ -1,0 +1,120 @@
+From 1a743445648777e702cf18e1830fd22429fb7352 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Wed, 5 Aug 2026 11:48:58 +0300
+Subject: [PATCH 23/23] perf(startup): stop blocking the prompt on reading the
+ shell's aliases
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Reading aliases and functions means running the user's shell with -i, which
+evaluates their whole rc file. On a profile with a prompt framework and version
+managers that measured 1.53s of a 1.56s startup — and because it was awaited
+before the user's shell was spawned, the rc was evaluated twice end to end
+before a usable prompt appeared. Powerlevel10k's instant prompt painted in the
+middle of that, so the terminal looked ready a good three seconds before it
+was, and anything typed into that window was lost.
+
+Nothing needs the result to be present, only to arrive. The highlighter already
+checks the name set ahead of its miss cache precisely so a late arrival isn't
+pinned invalid; expansion and alias-derived suggestions read empty for the
+first moment of a session, which is the same as having no aliases configured.
+Startup drops to 30ms and the prompt lands in roughly a third of the time.
+
+The probe now runs detached. An interactive shell sets up job control against
+/dev/tty and makes itself the foreground process group; serialised behind the
+await that was invisible, but running alongside the UI it took the terminal out
+from under us and setRawMode failed with EIO. Its own session leaves our
+terminal alone. Generators keep the old behaviour — none of them run -i.
+---
+ src/runtime/alias.ts      |  4 +++-
+ src/runtime/initialize.ts | 20 +++++++++++++++++++-
+ src/runtime/utils.ts      | 12 ++++++++++--
+ 3 files changed, 32 insertions(+), 4 deletions(-)
+
+diff --git a/src/runtime/alias.ts b/src/runtime/alias.ts
+index f69d297..cc939d9 100644
+--- a/src/runtime/alias.ts
++++ b/src/runtime/alias.ts
+@@ -20,7 +20,9 @@ let aliasNames: string[] = [];
+  */
+ let shellDefinedNames: ReadonlySet<string> = new Set();
+ const platform = os.platform();
+-const executeShellCommand = buildExecuteShellCommand(5_000);
++// Detached: this is the one caller that runs a shell with `-i`, and it now runs
++// concurrently with the UI taking the terminal into raw mode.
++const executeShellCommand = buildExecuteShellCommand(5_000, undefined, true);
+ 
+ /**
+  * Marks where the alias listing ends and the function listing begins, so both
+diff --git a/src/runtime/initialize.ts b/src/runtime/initialize.ts
+index a71c309..c631426 100644
+--- a/src/runtime/initialize.ts
++++ b/src/runtime/initialize.ts
+@@ -4,6 +4,7 @@
+ import { setupZshDotfiles, Shell } from "../utils/shell.js";
+ import { getConfig } from "../utils/config.js";
+ import { loadFrecency } from "../utils/frecency.js";
++import log from "../utils/log.js";
+ 
+ type RuntimeModule = typeof import("./runtime.js");
+ 
+@@ -13,9 +14,26 @@ export const initializeRuntime = (shell: Shell, underTest = false): Promise<Runt
+   runtimeInitialization ??= (async () => {
+     const zshSetup = shell == Shell.Zsh ? setupZshDotfiles(underTest) : Promise.resolve();
+     const [runtime, alias] = await Promise.all([import("./runtime.js"), import("./alias.js")]);
++
++    // Deliberately not awaited. Reading the shell's aliases and functions means
++    // running `<shell> -i -c`, which evaluates the user's entire rc file — on a
++    // profile with a prompt framework and version managers that is over a
++    // second, and it was the whole of startup. Blocking on it delayed spawning
++    // the user's shell, so the rc was evaluated twice end to end before a usable
++    // prompt appeared.
++    //
++    // Nothing needs the result to be present, only to arrive: the highlighter
++    // checks isShellDefinedCommand ahead of its miss cache precisely so a name
++    // that lands late isn't pinned invalid, and aliasExpand/getAliasNames read
++    // empty until it resolves, which costs at most a second of alias-derived
++    // suggestions on a fresh session.
++    alias.loadAliases(shell).catch((error) => {
++      log.debug({ msg: "failed to load shell aliases", error });
++    });
++
+     // Frecency history is read exactly once, here — the ranking path is pure
+     // in-memory map lookups so it never touches disk per keystroke.
+-    await Promise.all([runtime.loadLocalSpecsSet(), alias.loadAliases(shell), zshSetup, loadFrecency(getConfig().useFrecency)]);
++    await Promise.all([runtime.loadLocalSpecsSet(), zshSetup, loadFrecency(getConfig().useFrecency)]);
+     return runtime;
+   })();
+   return runtimeInitialization;
+diff --git a/src/runtime/utils.ts b/src/runtime/utils.ts
+index dacff16..c9a786d 100644
+--- a/src/runtime/utils.ts
++++ b/src/runtime/utils.ts
+@@ -87,13 +87,21 @@ export const getShellWhitespaceEscapeChar = (shell: Shell): string => {
+ export const escapePath = (value: string | undefined, shell: Shell): string | undefined =>
+   value != null && needsQuoted(value, getShellQuoteChar(shell)) ? quoteString(value, getShellQuoteChar(shell)) : value;
+ 
++/**
++ * `detached` puts the child in its own session, so it has no controlling
++ * terminal. Required for anything running a shell with `-i`: an interactive
++ * shell sets up job control against /dev/tty and makes itself the foreground
++ * process group, which pulls the terminal out from under us — a concurrent
++ * setRawMode then fails with EIO. Generators don't run interactive shells and
++ * so don't need it.
++ */
+ export const buildExecuteShellCommand =
+-  (timeout: number, signal?: AbortSignal): Fig.ExecuteCommandFunction =>
++  (timeout: number, signal?: AbortSignal, detached = false): Fig.ExecuteCommandFunction =>
+   async ({ command, env, args, cwd }: Fig.ExecuteCommandInput): Promise<Fig.ExecuteCommandOutput> => {
+     signal?.throwIfAborted();
+     const executionShell = await getExecutionShell();
+     const escapedArgs = escapeArgs(executionShell, args);
+-    const child = spawn(command, escapedArgs, { cwd, env: { ...process.env, ...env, ISTERM: "1" }, shell: executionShell, signal });
++    const child = spawn(command, escapedArgs, { cwd, env: { ...process.env, ...env, ISTERM: "1" }, shell: executionShell, signal, detached });
+     const killTimeout = setTimeout(() => child.kill("SIGKILL"), timeout);
+     let stdout = "";
+     let stderr = "";
+-- 
+2.51.0
+
