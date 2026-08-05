@@ -1,0 +1,251 @@
+From f966f27724bee3ed0457fb93d4fe4a86bf93b876 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Wed, 5 Aug 2026 11:36:53 +0300
+Subject: [PATCH 22/22] fix(ui): don't mark shell functions as invalid commands
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The highlighter learned about aliases but not functions, so `nvm`, `compdef`
+and everything else an rc file defines still rendered as invalidCommand.
+They're as real as any alias — the shell runs them, they're just not on $PATH.
+
+Both listings now come back from one interactive shell: `alias`, a marker
+line, then `${(k)functions}` on zsh or `declare -F` on bash. A second spawn
+would mean evaluating the user's whole profile twice, which is about a second
+on a real setup, on every session start. The marker is echoed by the shell
+itself, so anything an rc file printed on the way up falls in the alias half
+where the parser already discards it.
+
+isAliasName becomes isShellDefinedCommand, since the set it answers for is no
+longer only aliases. Expansion still reads loadedAliases and stays behind
+useAliases.
+---
+ src/runtime/alias.ts                          | 90 ++++++++++++++-----
+ src/runtime/commandLineColor.ts               | 10 +--
+ .../runtime/commandLineColorAlias.test.ts     | 18 ++--
+ 3 files changed, 86 insertions(+), 32 deletions(-)
+
+diff --git a/src/runtime/alias.ts b/src/runtime/alias.ts
+index ae5d735..f69d297 100644
+--- a/src/runtime/alias.ts
++++ b/src/runtime/alias.ts
+@@ -12,39 +12,74 @@ import { readManagedAliases } from "../utils/managedAliases.js";
+ const loadedAliases: { [key: string]: CommandToken[] | undefined } = {};
+ let aliasNames: string[] = [];
+ /**
+- * Every alias name the user's shell knows about, whether or not `useAliases`
+- * let us expand it. Expansion is opt-in because it rewrites what gets
+- * completed, but a command line that starts with `gst` isn't wrong just
+- * because expansion is off — so the highlighter reads this set instead.
++ * Every name the user's shell will run that isn't on $PATH: aliases, shell
++ * functions, and our managed aliases. Populated whatever `useAliases` says —
++ * expansion is opt-in because it rewrites what gets completed, but a command
++ * line starting with `gst` or `nvm` isn't wrong just because expansion is off,
++ * so the highlighter reads this set instead of loadedAliases.
+  */
+-let knownAliasNames: ReadonlySet<string> = new Set();
++let shellDefinedNames: ReadonlySet<string> = new Set();
+ const platform = os.platform();
+ const executeShellCommand = buildExecuteShellCommand(5_000);
+ 
+-const readBashAliases = async (): Promise<Map<string, string>> => {
++/**
++ * Marks where the alias listing ends and the function listing begins, so both
++ * come back from one interactive shell. A second spawn would cost another full
++ * rc evaluation — around a second on a real profile — on every session start.
++ */
++const functionsMarker = "__ISTERM_FUNCTIONS__";
++
++type ShellDefinitions = { aliases: Map<string, string>; functions: Set<string> };
++
++const noDefinitions = (): ShellDefinitions => ({ aliases: new Map(), functions: new Set() });
++
++const readBashDefinitions = async (): Promise<ShellDefinitions> => {
+   const shellTarget = platform == "win32" ? await gitBashPath() : Shell.Bash;
+   const { stdout, stderr, status } = await executeShellCommand({
+     command: `'${shellTarget}'`,
+-    args: ["-i", "-c", "alias"],
++    // `declare -F` prints "declare -f name"; the prefix is stripped below.
++    args: ["-i", "-c", `alias; echo ${functionsMarker}; declare -F`],
+     cwd: process.cwd(),
+     env: { ISTERM: "1" },
+   });
+   if (status !== 0) {
+     log.debug({ msg: "failed to load bash aliases", stderr, status });
+-    return new Map();
++    return noDefinitions();
+   }
+ 
+-  return parseAliasOutput(stdout, (line) => line.replace("alias ", ""));
++  const [aliasOutput, functionOutput] = splitOnMarker(stdout);
++  return {
++    aliases: parseAliasOutput(aliasOutput, (line) => line.replace("alias ", "")),
++    functions: parseFunctionOutput(functionOutput, (line) => line.replace(/^declare -f\w* /, "")),
++  };
+ };
+ 
+-const readZshAliases = async (): Promise<Map<string, string>> => {
+-  const { stdout, stderr, status } = await executeShellCommand({ command: Shell.Zsh, args: ["-i", "-c", "alias"], cwd: process.cwd(), env: { ISTERM: "1" } });
++const readZshDefinitions = async (): Promise<ShellDefinitions> => {
++  const { stdout, stderr, status } = await executeShellCommand({
++    command: Shell.Zsh,
++    args: ["-i", "-c", `alias; echo ${functionsMarker}; print -l -- \${(k)functions}`],
++    cwd: process.cwd(),
++    env: { ISTERM: "1" },
++  });
+   if (status !== 0) {
+     log.debug({ msg: "failed to load zsh aliases", stderr, status });
+-    return new Map();
++    return noDefinitions();
+   }
+ 
+-  return parseAliasOutput(stdout, (line) => line);
++  const [aliasOutput, functionOutput] = splitOnMarker(stdout);
++  return { aliases: parseAliasOutput(aliasOutput, (line) => line), functions: parseFunctionOutput(functionOutput, (line) => line) };
++};
++
++/**
++ * The marker is echoed by the shell itself, so anything an rc file printed on
++ * its way up lands in the alias half and is discarded by the parser rather than
++ * being mistaken for a function name. No marker at all means the command never
++ * got that far — treat the whole output as aliases.
++ */
++const splitOnMarker = (stdout: string): [string, string] => {
++  const markerIndex = stdout.indexOf(`${functionsMarker}\n`);
++  if (markerIndex < 0) return [stdout, ""];
++  return [stdout.slice(0, markerIndex), stdout.slice(markerIndex + functionsMarker.length + 1)];
+ };
+ 
+ const parseAliasOutput = (stdout: string, strip: (line: string) => string): Map<string, string> => {
+@@ -60,33 +95,46 @@ const parseAliasOutput = (stdout: string, strip: (line: string) => string): Map<
+   return aliases;
+ };
+ 
+-const readShellAliases = async (shell: Shell): Promise<Map<string, string>> => {
++const parseFunctionOutput = (stdout: string, strip: (line: string) => string): Set<string> => {
++  const functions = new Set<string>();
++  stdout
++    .trim()
++    .split("\n")
++    .forEach((line) => {
++      const name = strip(line.trim());
++      if (name == "") return;
++      functions.add(name);
++    });
++  return functions;
++};
++
++const readShellDefinitions = async (shell: Shell): Promise<ShellDefinitions> => {
+   switch (shell) {
+     case Shell.Bash:
+-      return readBashAliases();
++      return readBashDefinitions();
+     case Shell.Zsh:
+-      return readZshAliases();
++      return readZshDefinitions();
+     default:
+-      return new Map();
++      return noDefinitions();
+   }
+ };
+ 
+ export const loadAliases = async (shell: Shell) => {
+-  const shellAliases = await readShellAliases(shell);
++  const { aliases, functions } = await readShellDefinitions(shell);
+   if (getConfig().useAliases) {
+-    for (const [alias, command] of shellAliases) {
++    for (const [alias, command] of aliases) {
+       loadedAliases[alias] = parseCommand(command + " ", shell);
+     }
+   }
+   const managedAliases = await readManagedAliases();
+   const managedAliasNames = managedAliases.map((alias) => alias.name);
+   aliasNames = [...new Set([...Object.keys(loadedAliases), ...managedAliasNames])].sort();
+-  knownAliasNames = new Set([...shellAliases.keys(), ...managedAliasNames]);
++  shellDefinedNames = new Set([...aliases.keys(), ...functions, ...managedAliasNames]);
+ };
+ 
+ export const getAliasNames = () => aliasNames;
+ 
+-export const isAliasName = (command: string) => knownAliasNames.has(command);
++export const isShellDefinedCommand = (command: string) => shellDefinedNames.has(command);
+ 
+ export const aliasExpand = (command: CommandToken[]): CommandToken[] => {
+   if (!command.at(0)?.complete) return command;
+diff --git a/src/runtime/commandLineColor.ts b/src/runtime/commandLineColor.ts
+index c229f59..84c5642 100644
+--- a/src/runtime/commandLineColor.ts
++++ b/src/runtime/commandLineColor.ts
+@@ -1,7 +1,7 @@
+ // Copyright (c) Microsoft Corporation.
+ // Licensed under the MIT License.
+ 
+-import { isAliasName } from "./alias.js";
++import { isShellDefinedCommand } from "./alias.js";
+ import { wcswidth } from "../utils/unicode.js";
+ import fs from "node:fs";
+ import path from "node:path";
+@@ -84,10 +84,10 @@ const pathCommandExists = (command: string, cwd: string): boolean => {
+ };
+ 
+ const commandExists = (command: string, cwd: string): boolean => {
+-  // Aliases are checked ahead of the cache: they land after the first
+-  // keystrokes (shell aliases load asynchronously, managed ones can appear
+-  // mid-session) so a cached miss must not pin a real command as invalid.
+-  if (isAliasName(command)) return true;
++  // Aliases and shell functions are checked ahead of the cache: they land after
++  // the first keystrokes (the shell is read asynchronously, managed aliases can
++  // appear mid-session) so a cached miss must not pin a real command as invalid.
++  if (isShellDefinedCommand(command)) return true;
+   const key = `${cwd}\u0000${command}`;
+   const cached = commandExistsCache.get(key);
+   if (cached != null) return cached;
+diff --git a/src/tests/runtime/commandLineColorAlias.test.ts b/src/tests/runtime/commandLineColorAlias.test.ts
+index 361fb4e..7c6f564 100644
+--- a/src/tests/runtime/commandLineColorAlias.test.ts
++++ b/src/tests/runtime/commandLineColorAlias.test.ts
+@@ -3,10 +3,10 @@
+ 
+ import { jest } from "@jest/globals";
+ 
+-const mockIsAliasName = jest.fn<(command: string) => boolean>();
++const mockIsShellDefinedCommand = jest.fn<(command: string) => boolean>();
+ 
+ jest.unstable_mockModule("../../runtime/alias.js", () => ({
+-  isAliasName: mockIsAliasName,
++  isShellDefinedCommand: mockIsShellDefinedCommand,
+ }));
+ 
+ const { commandLineColorSpans, commandLineColorTypeAt } = await import("../../runtime/commandLineColor.js");
+@@ -18,17 +18,23 @@ const typeAtWord = (command: string, word: string) => {
+ 
+ beforeEach(() => {
+   jest.clearAllMocks();
+-  mockIsAliasName.mockReturnValue(false);
++  mockIsShellDefinedCommand.mockReturnValue(false);
+ });
+ 
+ test("treats a known alias as a valid command", () => {
+-  mockIsAliasName.mockImplementation((command) => command === "gst");
++  mockIsShellDefinedCommand.mockImplementation((command) => command === "gst");
+   expect(typeAtWord("gst --short", "gst")).toBe("subcommand");
+   expect(typeAtWord("gstt --short", "gstt")).toBe("invalidCommand");
+ });
+ 
+-test("checks aliases ahead of the miss cache", () => {
++test("treats a shell function as a valid command", () => {
++  // nvm is a function sourced from an rc file, so it is on no $PATH.
++  mockIsShellDefinedCommand.mockImplementation((command) => command === "nvm");
++  expect(typeAtWord("nvm use 20", "nvm")).toBe("subcommand");
++});
++
++test("checks shell definitions ahead of the miss cache", () => {
+   expect(typeAtWord("later-alias run", "later-alias")).toBe("invalidCommand");
+-  mockIsAliasName.mockImplementation((command) => command === "later-alias");
++  mockIsShellDefinedCommand.mockImplementation((command) => command === "later-alias");
+   expect(typeAtWord("later-alias run", "later-alias")).toBe("subcommand");
+ });
+-- 
+2.51.0
+
