@@ -116,7 +116,7 @@ Run `termauto --help` for this table in the terminal.
 | Key                                                       | Action                                                   |
 | --------------------------------------------------------- | -------------------------------------------------------- |
 | <kbd>Tab</kbd>                                            | accept the highlighted suggestion                        |
-| <kbd>Enter</kbd>                                          | accept; a second <kbd>Enter</kbd> runs the line          |
+| <kbd>Enter</kbd>                                          | run the command, ignoring the suggestion menu            |
 | <kbd>→</kbd>                                              | accept, only with the cursor at end of line              |
 | <kbd>↑</kbd> / <kbd>↓</kbd>                               | move the selection                                       |
 | <kbd>Esc</kbd>                                            | dismiss for the rest of the line; <kbd>Tab</kbd> reopens |
@@ -133,11 +133,9 @@ are bindable: terminals send <kbd>Alt</kbd> as an ESC prefix, and readline repor
 is literally indistinguishable from the start of an escape sequence. These bind
 only while the menu is open, so the readline meanings they shadow stay reachable.
 
-Upstream only accepts on <kbd>Tab</kbd>. We add two more, both config-gated:
+Upstream only accepts on <kbd>Tab</kbd>. We keep <kbd>Enter</kbd> for the shell
+and add one more config-gated accept key:
 
-- <kbd>Enter</kbd> accepts the highlighted suggestion, then a second <kbd>Enter</kbd>
-  runs the command. If the word is **already fully typed** there's nothing to
-  accept, so <kbd>Enter</kbd> submits directly rather than demanding two presses.
 - <kbd>→</kbd> accepts **only with the cursor at end of line** — mid-line it still
   moves the cursor, otherwise the line would be uneditable.
 
@@ -145,18 +143,15 @@ Each accept key has a **mode** (Amazon Q's per-key model), set under `[keys]`:
 
 | Mode                 | Behaviour                                                                                                                      |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `insert` _(default)_ | accept the highlighted suggestion                                                                                              |
+| `insert`             | accept the highlighted suggestion                                                                                              |
 | `insertOrPrefix`     | insert the shared prefix while candidates still differ, and only commit once they don't — how a shell's own completion behaves |
-| `ignore`             | don't intercept; the key goes straight to the shell                                                                            |
+| `ignore` _(Enter default)_ | don't intercept; the key goes straight to the shell                                                                       |
 
 `acceptOnEnter = false` / `acceptOnRightArrow = false` still work, and map onto
 `ignore`.
 
-After <kbd>Enter</kbd> accepts, the menu **stays shut until you type something** —
-a space counts. Otherwise accepting would immediately reopen it and the second
-<kbd>Enter</kbd> would accept _that_ instead of running the line, so the command
-could never be submitted. Deliberately not a timer: one either expires while
-you're still deciding, or holds the menu back after you've carried on typing.
+If you explicitly configure <kbd>Enter</kbd> back to `insert`, the menu stays
+shut until you type something after accepting. A space counts.
 
 <kbd>Esc</kbd> closes the menu **for the rest of the line** — it no longer pops
 back on the next character (upstream reset its hidden flag on the very next
@@ -272,14 +267,14 @@ specs/src/          our specs (filename = command name)
 specs/src/lib/      shared generators + spec-augment helpers
 specs/refresh/      --help vs spec drift report
 bin/termauto        launcher (path-independent)
-patches/            our 13 engine commits, exported by `npm run patches`
+patches/            our engine commits, exported by `npm run patches`
 vendor/             NOT committed — recreated by `npm run setup`
 ```
 
 > ### The engine changes live in `patches/`
 >
-> `vendor/inshellisense` keeps its own git repo with no remote, so the 13 engine
-> commits — frecency, Enter/Right accept, the styled menu, the icon sets, the Esc
+> `vendor/inshellisense` keeps its own git repo with no remote, so the engine
+> commits — frecency, Right-arrow accept, the styled menu, the icon sets, the Esc
 > fix, the `termauto` branding — exist there as real commits and nowhere else.
 > `patches/` is the exported copy, and it **is committed**: it is the only form in
 > which those changes reach another machine. Without it a fresh clone installs
@@ -336,13 +331,13 @@ maxSuggestions = 10       # root default; useful for e.g. xcodebuild's 78 option
 sortMethod = "frecency"   # frecency | recency | alphabetical | none — see below
 useFrecency = true        # legacy shorthand; false means sortMethod = "none"
 useNerdFont = false       # legacy shorthand for theme.icons = "nerd"
-acceptOnEnter = true      # legacy shorthand for keys.enter
+acceptOnEnter = false     # legacy shorthand for keys.enter
 acceptOnRightArrow = true # legacy shorthand for keys.rightArrow
 selectSuggestionModifier = "alt"   # "alt" | "off" — Alt+1..9 picks the Nth row
 
 [keys]                    # per-key accept behaviour
 tab = "insert"            # insert | insertOrPrefix | ignore
-enter = "insert"
+enter = "ignore"
 rightArrow = "insert"
 
 [bindings]                # which key runs which action

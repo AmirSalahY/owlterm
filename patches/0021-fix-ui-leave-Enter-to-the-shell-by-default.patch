@@ -1,0 +1,182 @@
+From c07a72f588bd77f1d105e1d61b73c1933f15e914 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Wed, 5 Aug 2026 10:23:53 +0300
+Subject: [PATCH 21/21] fix(ui): leave Enter to the shell by default
+
+---
+ src/index.ts                |  8 ++---
+ src/tests/keys.test.ts      | 59 +++++++------------------------------
+ src/ui/suggestionManager.ts | 24 +++++++--------
+ 3 files changed, 26 insertions(+), 65 deletions(-)
+
+diff --git a/src/index.ts b/src/index.ts
+index 1972657..bea97f8 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -33,7 +33,7 @@ const hiddenOption = (flags: string, description: string) => {
+ const keybindingHelp = () => `
+ Keys (while the suggestion menu is open):
+   Tab                accept the highlighted suggestion
+-  Enter              accept, then Enter again to run
++  Enter              run the command, ignoring the suggestion menu
+   Right              accept, only with the cursor at end of line
+   Up / Down          move the selection
+   Esc                dismiss for the rest of the line; Tab reopens
+@@ -50,9 +50,9 @@ Suggestion order (sortMethod):
+   alphabetical       by name, ignoring usage
+   none               spec-declared priority only
+ 
+-After Enter accepts a suggestion the menu stays shut until you type something —
+-a space counts — so a second Enter runs the line rather than accepting whatever
+-would have reopened.
++Enter is deliberately left to the shell so a visible suggestion cannot block
++submitting the command. Use Tab to accept or Alt+Enter to accept and run in one
++keystroke.
+ 
+ Configure the rest in ~/.config/inshellisense/rc.toml, under [bindings], [keys]
+ and sortMethod. Alt+letter, Alt+digit and Alt+Enter are the only Alt combinations a
+diff --git a/src/tests/keys.test.ts b/src/tests/keys.test.ts
+index 200ff91..a784375 100644
+--- a/src/tests/keys.test.ts
++++ b/src/tests/keys.test.ts
+@@ -235,69 +235,30 @@ describe("Esc dismisses", () => {
+   });
+ });
+ 
+-describe("menu stays shut after Enter accepts", () => {
++describe("Enter submits", () => {
+   const enter = press("return");
+ 
+-  it("suppresses the menu so the next Enter submits instead of accepting again", async () => {
++  it("falls through to the shell even while a suggestion is highlighted", async () => {
+     const term = makeTerm("git ");
+     const m = await makeManager(term, [suggestion("status")]);
+ 
+-    expect(m.update(enter)).toBe(true);
+-    expect(term.written.join("")).toEqual("status ");
+-
+-    // Reloading produces no menu, so a second Enter has nothing to accept and
+-    // falls through to the shell.
+-    await m.exec();
+-    expect(m.render("below", 0)).toEqual([]);
++    expect(m.update(enter)).toBe(false);
++    expect(term.written).toEqual(["<clear>"]);
+   });
+ 
+-  it("stays shut indefinitely — no timer brings it back on its own", async () => {
+-    const term = makeTerm("git ");
+-    const m = await makeManager(term, [suggestion("status")]);
+-    m.update(enter);
+-
+-    for (let i = 0; i < 3; i++) {
+-      await new Promise((r) => setTimeout(r, 20));
+-      await m.exec();
+-      expect(m.render("below", 0)).toEqual([]);
+-    }
+-  });
+-
+-  it("comes back as soon as anything is typed", async () => {
+-    const term = makeTerm("git ");
+-    const m = await makeManager(term, [suggestion("status")]);
+-    m.update(enter);
+-
+-    m.update(press("x"));
+-    await m.exec();
+-    expect(m.render("below", 0).length).toBeGreaterThan(0);
+-  });
+-
+-  it("counts a space as typing", async () => {
+-    const term = makeTerm("git ");
+-    const m = await makeManager(term, [suggestion("status")]);
+-    m.update(enter);
+-
+-    m.update(press("space"));
+-    await m.exec();
+-    expect(m.render("below", 0).length).toBeGreaterThan(0);
+-  });
+-
+-  it("does not suppress when Enter had nothing to accept", async () => {
++  it("also falls through when there is nothing left to accept", async () => {
+     const term = makeTerm("git status");
+     const m = await makeManager(term, [suggestion("status")], "status");
+ 
+-    m.update(enter);
+-    await m.exec();
+-    expect(m.render("below", 0).length).toBeGreaterThan(0);
++    expect(m.update(enter)).toBe(false);
++    expect(term.written).toEqual(["<clear>"]);
+   });
+ 
+-  it("does not suppress for Alt+Enter, which is executeSelected", async () => {
++  it("does not interfere with Alt+Enter, which is executeSelected", async () => {
+     const term = makeTerm("git ");
+     const m = await makeManager(term, [suggestion("status")]);
+ 
+-    m.update(press("return", { meta: true }));
+-    await m.exec();
+-    expect(m.render("below", 0).length).toBeGreaterThan(0);
++    expect(m.update(press("return", { meta: true }))).toBe(true);
++    expect(term.written.join("")).toEqual("status \r");
+   });
+ });
+diff --git a/src/ui/suggestionManager.ts b/src/ui/suggestionManager.ts
+index d49ed88..bf603a6 100644
+--- a/src/ui/suggestionManager.ts
++++ b/src/ui/suggestionManager.ts
+@@ -123,15 +123,11 @@ export class SuggestionManager {
+    */
+   #descriptionHidden: boolean = false;
+   /**
+-   * Set when Enter accepted a suggestion; keeps the menu shut until the user
+-   * types something.
++   * Set when a user configures Enter to accept a suggestion; keeps the menu shut
++   * until the user types something.
+    *
+-   * Accepting on Enter changes the command line, which immediately produces a new
+-   * menu — so the second Enter accepted *that* instead of submitting, and the line
+-   * could never be run. Deliberately not time-based: a timer either expires while
+-   * you are still deciding, or holds the menu back after you have carried on
+-   * typing. "Until the next character" is the condition that actually matters, and
+-   * a space counts.
++   * The repo default leaves Enter to the shell, but older configs can still opt
++   * into Enter acceptance through keys.enter/acceptOnEnter.
+    */
+   #suppressUntilNextInput: boolean = false;
+   #abortController?: AbortController;
+@@ -494,9 +490,10 @@ export class SuggestionManager {
+     // window exists for.
+     const isPlainEnter = name === "return" && !ctrl && !shift && !keyPress.meta;
+ 
+-    // Resolved up front because Enter is now overloaded: when it is going to accept
++    // Resolved up front because Enter is configurable: when it is going to accept
+     // a suggestion it must NOT clear the command, or it would wipe the very line the
+-    // acceptance is about to edit.
++    // acceptance is about to edit. With the default `keys.enter = "ignore"`, this
++    // makes Enter clear our command tracker and then fall through to the shell.
+     //
+     // insertOrPrefix narrows to the shared prefix while the candidates still
+     // disagree, and only commits to the selection once they don't — so an
+@@ -515,7 +512,8 @@ export class SuggestionManager {
+     // below and wipe the very line it is about to complete.
+     const pendingExecute = allowBindings && matches(keyPress, getConfig().bindings.executeSelected) ? this.#pendingAcceptance() : undefined;
+ 
+-    if (name == "return" && acceptance == null && pendingExecute == null) {
++    const shouldClearOnEnter = name == "return" && acceptance == null && pendingExecute == null;
++    if (shouldClearOnEnter) {
+       this.#term.clearCommand(); // clear the current command on enter
+     }
+ 
+@@ -596,7 +594,9 @@ export class SuggestionManager {
+       this.#term.write(applyReplacement(acceptance));
+       // Hold the menu shut so the next Enter reaches the shell and runs the line.
+       if (isPlainEnter) this.#suppressUntilNextInput = true;
+-    } else if (name == "return" || (name == "c" && ctrl)) {
++    } else if (name == "return") {
++      return false;
++    } else if (name == "c" && ctrl) {
+       this.#term.clearCommand();
+       return false;
+     } else {
+-- 
+2.50.1 (Apple Git-155)
+

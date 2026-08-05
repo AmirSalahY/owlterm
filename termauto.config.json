@@ -13,7 +13,7 @@
   "selectSuggestionModifier": "alt",
   "keys": {
     "tab": "insert",
-    "enter": "insert",
+    "enter": "ignore",
     "rightArrow": "insert"
   },
   "sortMethod": "frecency",
@@ -24,7 +24,7 @@
   "useNerdFont": false,
   "maxSuggestions": 10,
   "useFrecency": true,
-  "acceptOnEnter": true,
+  "acceptOnEnter": false,
   "acceptOnRightArrow": true,
   "theme": {
     "border": "#2C2C2E",

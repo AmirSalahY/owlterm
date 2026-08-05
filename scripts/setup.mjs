@@ -42,7 +42,7 @@ const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf
 const UPSTREAM = "https://github.com/microsoft/inshellisense";
 // Pinned so a rebuild months from now produces the same engine our patches were
 // written against. Bump deliberately via `npm run upstream`, never incidentally.
-const PINNED_COMMIT = "6bd0ae7";
+const PINNED_COMMIT = "5c97e85";
 
 const sh = (cmd, args, opts = {}) => run(cmd, args, { stdio: "inherit", encoding: "utf8", ...opts });
 

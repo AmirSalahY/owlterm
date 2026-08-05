@@ -1,7 +1,7 @@
 From 1d92fec2fea5f2e2fe94fcf96133d056f39576c7 Mon Sep 17 00:00:00 2001
 From: AmirSalahY <amir@noury.ch>
 Date: Mon, 3 Aug 2026 12:05:51 +0300
-Subject: [PATCH 20/20] fix(ui): don't mark the user's own shell aliases as
+Subject: [PATCH 20/21] fix(ui): don't mark the user's own shell aliases as
  invalid commands
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -205,5 +205,5 @@ index 0000000..361fb4e
 +  expect(typeAtWord("later-alias run", "later-alias")).toBe("subcommand");
 +});
 -- 
-2.51.0
+2.50.1 (Apple Git-155)
 
