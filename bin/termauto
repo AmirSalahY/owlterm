@@ -50,6 +50,27 @@ export TERMAUTO_DEFAULT_CONFIG="$DEFAULT_CONFIG"
 ISTERM_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/package.json" 2>/dev/null | head -1)"
 [[ -n "$ISTERM_VERSION" ]] && export ISTERM_VERSION || unset ISTERM_VERSION
 
+refresh_resources_if_needed() {
+  [[ -n "${ISTERM_VERSION:-}" ]] || return 0
+
+  local version_file="${HOME:-}/.inshellisense/version.txt"
+  local unpacked_version=""
+  if [[ -f "$version_file" ]]; then
+    unpacked_version="$(tr -d '\r\n' < "$version_file" 2>/dev/null || true)"
+  fi
+  [[ "$unpacked_version" == "$ISTERM_VERSION" ]] && return 0
+
+  # In a plain tsc build, reinit must run from the engine checkout so bundled
+  # shell files and specs resolve from vendor/inshellisense.
+  if ! (
+    cd "$(dirname "$ENTRY")/.." || exit 1
+    node "$ENTRY" reinit >/dev/null
+  ); then
+    echo "termauto: resources out of date and automatic reinit failed. Run: termauto reinit" >&2
+    exit 1
+  fi
+}
+
 case "${1:-}" in
   update)
     exec node "$UPDATE" "$ROOT"
@@ -74,6 +95,10 @@ for arg in "$@"; do
 done
 if [[ "$should_check_updates" == true && -t 2 && "${TERMAUTO_UPDATE_CHECK:-1}" != "0" && -f "$UPDATE_CHECK" ]]; then
   node "$UPDATE_CHECK" "$ROOT" >&2 || true
+fi
+
+if [[ "$should_check_updates" == true ]]; then
+  refresh_resources_if_needed
 fi
 
 # `init` and `reinit` call unpackResources(), which in a non-SEA build reads
