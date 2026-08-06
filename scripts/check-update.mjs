@@ -62,6 +62,19 @@ const writeCache = (release) => {
   }
 };
 
+const writeNotice = (message) => {
+  const output = process.env.TERMAUTO_UPDATE_OUTPUT;
+  if (output) {
+    try {
+      fs.writeFileSync(output, message, { flag: "a" });
+      return;
+    } catch {
+      return;
+    }
+  }
+  process.stdout.write(message);
+};
+
 const fetchRelease = async () => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -96,8 +109,7 @@ const main = async () => {
   const release = readCache() ?? (await fetchRelease());
   if (!release?.version || compareVersions(release.version, current) <= 0) return;
 
-  process.stdout.write(`\ntermauto ${release.version} is available; current is ${current}.\n`);
-  process.stdout.write("Run: termauto update\n\n");
+  writeNotice(`\ntermauto ${release.version} is available; current is ${current}.\nRun: termauto update\n\n`);
 };
 
 await main();

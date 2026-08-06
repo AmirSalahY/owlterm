@@ -95,7 +95,9 @@ for arg in "$@"; do
   esac
 done
 if [[ "$should_check_updates" == true && -t 2 && "${TERMAUTO_UPDATE_CHECK:-1}" != "0" && -f "$UPDATE_CHECK" ]]; then
-  node "$UPDATE_CHECK" "$ROOT" >&2 || true
+  # Do not make a new terminal wait on GitHub or DNS. The helper has its own
+  # timeout and cache; run it beside startup so a cold check cannot block prompt.
+  (TERMAUTO_UPDATE_OUTPUT=/dev/tty node "$UPDATE_CHECK" "$ROOT" </dev/null >/dev/null 2>/dev/null || true) &
 fi
 
 if [[ "$should_check_updates" == true ]]; then
