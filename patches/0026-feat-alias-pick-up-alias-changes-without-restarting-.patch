@@ -1,0 +1,271 @@
+From 5e150c90311bd403e6eacb721edd1352071c802a Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Thu, 6 Aug 2026 15:39:37 +0300
+Subject: [PATCH 26/26] feat(alias): pick up alias changes without restarting
+ the session
+
+The alias table was read once at startup, so a user who edited their
+rc file and sourced it, or just typed an alias at the prompt, kept
+completing against the old set until they opened a new session. The
+prompt-start hook already knows what command was executed, so it is
+also the point at which the table can be known stale: reload after
+anything that defines or removes a name, or sources a file that might.
+Unawaited like the startup read, since it re-evaluates a whole profile
+and must not sit between the command finishing and the next prompt.
+
+Reloading only ever added names, so an unalias left the old expansion
+in place; the table is now rebuilt instead of merged.
+
+reinit reports what the shells actually expose, and which bash startup
+files were readable. An alias living in a file no shell reads produces
+no error anywhere, and looks identical to one that failed to parse.
+---
+ src/commands/reinit.ts          |  2 +-
+ src/isterm/pty.ts               | 10 ++++++
+ src/runtime/alias.ts            | 56 +++++++++++++++++++++++++++++++--
+ src/tests/runtime/alias.test.ts | 36 ++++++++++++++++++++-
+ src/ui/ui-reinit.ts             | 35 ++++++++++++++++++++-
+ 5 files changed, 134 insertions(+), 5 deletions(-)
+
+diff --git a/src/commands/reinit.ts b/src/commands/reinit.ts
+index ff22640..7651604 100644
+--- a/src/commands/reinit.ts
++++ b/src/commands/reinit.ts
+@@ -9,7 +9,7 @@ const action = async () => {
+ };
+ 
+ const cmd = new Command("reinit");
+-cmd.description(`regenerates shell configurations`);
++cmd.description(`regenerates shell configurations & reports the aliases your shells expose`);
+ cmd.action(action);
+ 
+ export default cmd;
+diff --git a/src/isterm/pty.ts b/src/isterm/pty.ts
+index e4919f9..521c2f5 100644
+--- a/src/isterm/pty.ts
++++ b/src/isterm/pty.ts
+@@ -28,6 +28,7 @@ import { Command } from "commander";
+ import which from "which";
+ import { shellResourcesPath } from "../utils/constants.js";
+ import { recordCommand } from "../utils/frecency.js";
++import { changesShellDefinitions, reloadAliases } from "../runtime/alias.js";
+ import { endTiming, startTiming } from "../utils/performance.js";
+ import { getConfig } from "../utils/config.js";
+ import { wcswidth } from "../utils/unicode.js";
+@@ -183,6 +184,15 @@ export class ISTerm implements IPty {
+       const commandText = this.#commandManager.getState().commandText;
+       if (commandText != null && commandText.trim() !== "") {
+         recordCommand(commandText, this.cwd);
++        // The alias table is read once at startup, so anything the user does at
++        // the prompt to change it — editing the rc file and sourcing it, or
++        // just typing an alias — would otherwise not be seen until the next
++        // session. Detached and unawaited, like the startup read: the reload
++        // costs a full rc evaluation and must not sit between the command
++        // finishing and the next prompt appearing.
++        if (changesShellDefinitions(commandText)) {
++          void reloadAliases(this.#shell);
++        }
+       }
+     } catch (e) {
+       // Ranking data is strictly best-effort: never let it break a live session.
+diff --git a/src/runtime/alias.ts b/src/runtime/alias.ts
+index 1487aa6..7c08f8d 100644
+--- a/src/runtime/alias.ts
++++ b/src/runtime/alias.ts
+@@ -40,8 +40,18 @@ const mergeDefinitions = (primary: ShellDefinitions, fallback: ShellDefinitions)
+   functions: new Set([...fallback.functions, ...primary.functions]),
+ });
+ 
++/**
++ * The files bash is asked to read before listing. `--noprofile --norc` then
++ * sourcing them by hand is deliberate: which of these a bash reads on its own
++ * depends on whether it considers itself a login shell, and we want the union
++ * regardless — the alias the user is typing lives wherever they happened to
++ * put it. Reported verbatim by `reinit` so a missing alias is traceable to a
++ * file that was never read.
++ */
++export const bashStartupFiles = ["~/.profile", "~/.bash_profile", "~/.bash_login", "~/.bashrc", "~/.bash_aliases"];
++
+ const bashStartupPrelude = [
+-  "for __isterm_bash_startup in ~/.profile ~/.bash_profile ~/.bash_login ~/.bashrc ~/.bash_aliases; do",
++  `for __isterm_bash_startup in ${bashStartupFiles.join(" ")}; do`,
+   '  [ -r "$__isterm_bash_startup" ] && . "$__isterm_bash_startup"',
+   "done",
+   "unset __isterm_bash_startup",
+@@ -126,7 +136,7 @@ const parseFunctionOutput = (stdout: string, strip: (line: string) => string): S
+   return functions;
+ };
+ 
+-const readShellDefinitions = async (shell: Shell): Promise<ShellDefinitions> => {
++export const readShellDefinitions = async (shell: Shell): Promise<ShellDefinitions> => {
+   switch (shell) {
+     case Shell.Bash:
+       return readBashDefinitions();
+@@ -139,6 +149,9 @@ const readShellDefinitions = async (shell: Shell): Promise<ShellDefinitions> =>
+ 
+ export const loadAliases = async (shell: Shell) => {
+   const { aliases, functions } = await readShellDefinitions(shell);
++  // Rebuilt rather than merged, so an `unalias` or a deleted line in the rc
++  // file actually takes the name back out on a reload.
++  for (const stale of Object.keys(loadedAliases)) delete loadedAliases[stale];
+   if (getConfig().useAliases) {
+     for (const [alias, command] of aliases) {
+       loadedAliases[alias] = parseCommand(command + " ", shell);
+@@ -150,6 +163,45 @@ export const loadAliases = async (shell: Shell) => {
+   shellDefinedNames = new Set([...aliases.keys(), ...functions, ...managedAliasNames]);
+ };
+ 
++/**
++ * Names that, run at a prompt, can leave the table stale: they either define
++ * or remove a name directly, or pull in a file that does. `source`/`.` is
++ * taken unconditionally rather than pattern-matched against rc filenames —
++ * a sourced env script defining a project alias is exactly the case a filename
++ * heuristic would miss.
++ */
++const aliasMutatingCommands = new Set(["alias", "unalias", "source", "."]);
++
++/**
++ * Statement separators, so `git pull && source .envrc` is noticed. Splitting
++ * on them is enough to find the head of each statement; anything subtler
++ * (quoting, here-docs) would only add false negatives to a best-effort check.
++ */
++const statementSeparators = /[\n;|&]+/;
++
++export const changesShellDefinitions = (commandText: string): boolean =>
++  commandText.split(statementSeparators).some((statement) => aliasMutatingCommands.has(statement.trim().split(/\s+/, 1)[0] ?? ""));
++
++let reloadInFlight: Promise<void> | undefined;
++
++/**
++ * Re-reads the shell's definitions mid-session. Serialised, because each call
++ * spawns an interactive shell and evaluates a whole profile: a burst of
++ * `alias` lines pasted at the prompt should cost one reload, not one each. The
++ * in-flight run is reused rather than queued behind — it was started after the
++ * command that triggered it, so it already sees the new state.
++ */
++export const reloadAliases = (shell: Shell): Promise<void> => {
++  reloadInFlight ??= loadAliases(shell)
++    .catch((error) => {
++      log.debug({ msg: "failed to reload shell aliases", error });
++    })
++    .finally(() => {
++      reloadInFlight = undefined;
++    });
++  return reloadInFlight;
++};
++
+ export const getAliasNames = () => aliasNames;
+ 
+ export const isShellDefinedCommand = (command: string) => shellDefinedNames.has(command);
+diff --git a/src/tests/runtime/alias.test.ts b/src/tests/runtime/alias.test.ts
+index aea3e34..cd4113d 100644
+--- a/src/tests/runtime/alias.test.ts
++++ b/src/tests/runtime/alias.test.ts
+@@ -16,7 +16,7 @@ jest.unstable_mockModule("../../utils/config.js", () => ({
+   getConfig: mockGetConfig,
+ }));
+ 
+-const { aliasExpand, loadAliases } = await import("../../runtime/alias.js");
++const { aliasExpand, loadAliases, changesShellDefinitions, getAliasNames } = await import("../../runtime/alias.js");
+ 
+ beforeEach(() => {
+   jest.clearAllMocks();
+@@ -120,3 +120,37 @@ ls='ls --color=auto'`,
+     ]);
+   });
+ });
++
++describe("changesShellDefinitions", () => {
++  test.each([
++    ["alias gs='git status'", true],
++    ["unalias gs", true],
++    ["source ~/.bashrc", true],
++    [". ~/.bash_aliases", true],
++    ["git pull && source .envrc", true],
++    ["  alias", true],
++    ["git status", false],
++    ["echo alias", false],
++    ["aliased --help", false],
++    ["", false],
++  ])("%s -> %s", (commandText, expected) => {
++    expect(changesShellDefinitions(commandText)).toBe(expected);
++  });
++});
++
++describe("loadAliases", () => {
++  test("drops names the shell no longer defines", async () => {
++    mockGetConfig.mockReturnValue({ useAliases: true });
++    mockExecuteShellCommand.mockReturnValue({ stdout: `alias gone='git status'`, status: 0 });
++    await loadAliases(Shell.Bash);
++    expect(getAliasNames()).toContain("gone");
++
++    mockExecuteShellCommand.mockReturnValue({ stdout: ``, status: 0 });
++    await loadAliases(Shell.Bash);
++
++    expect(getAliasNames()).not.toContain("gone");
++    expect(aliasExpand([{ token: "gone", complete: true, isOption: false, tokenLength: 4 }])).toEqual([
++      { token: "gone", complete: true, isOption: false, tokenLength: 4 },
++    ]);
++  });
++});
+diff --git a/src/ui/ui-reinit.ts b/src/ui/ui-reinit.ts
+index 2e03eb3..9dc9a47 100644
+--- a/src/ui/ui-reinit.ts
++++ b/src/ui/ui-reinit.ts
+@@ -3,7 +3,6 @@
+ 
+ import chalk from "chalk";
+ import { unpackResources } from "../utils/node.js";
+-import { createShellConfigs } from "../utils/shell.js";
+ import {
+   shellResourcesPath,
+   nativeResourcesPath,
+@@ -13,6 +12,38 @@ import {
+   versionResourcePath,
+ } from "../utils/constants.js";
+ import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++import { createShellConfigs, aliasSupportedShells } from "../utils/shell.js";
++import { bashStartupFiles, readShellDefinitions } from "../runtime/alias.js";
++
++/**
++ * A session reads the shell's aliases itself, at startup, so this reports
++ * rather than installs anything. It exists because the failure it describes is
++ * otherwise silent: an alias that lives in a file the shell never reads simply
++ * doesn't appear in the menu, with nothing to distinguish it from one termauto
++ * failed to parse.
++ */
++const renderShellDefinitions = async (): Promise<void> => {
++  for (const shell of aliasSupportedShells) {
++    const { aliases, functions } = await readShellDefinitions(shell);
++    const found = `${aliases.size} ${aliases.size === 1 ? "alias" : "aliases"}, ${functions.size} ${functions.size === 1 ? "function" : "functions"}`;
++    const mark = aliases.size + functions.size > 0 ? chalk.green("✓") : chalk.yellow("!");
++    process.stdout.write(`${mark} ${shell}: ${found}\n`);
++  }
++
++  // Only bash's list is worth printing: zsh is left to read its own rc files,
++  // whereas bash's are sourced by hand and so can be enumerated exactly.
++  const readable = bashStartupFiles.filter((file) => {
++    try {
++      fs.accessSync(path.join(os.homedir(), file.replace("~/", "")), fs.constants.R_OK);
++      return true;
++    } catch {
++      return false;
++    }
++  });
++  process.stdout.write(chalk.dim(`  bash startup files read: ${readable.length > 0 ? readable.join(", ") : "none found"}\n`));
++};
+ 
+ export const render = async () => {
+   fs.rmSync(shellResourcesPath, { recursive: true, force: true });
+@@ -27,4 +58,6 @@ export const render = async () => {
+   await unpackResources();
+ 
+   process.stdout.write(chalk.green("✓") + " successfully installed inshellisense \n");
++
++  await renderShellDefinitions();
+ };
+-- 
+2.51.0
+

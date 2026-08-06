@@ -187,6 +187,37 @@ Use this rather than the upstream `termauto init zsh >> ~/.zshrc`, because it al
 
 For fish / pwsh / nu: `termauto init <shell>`, placed last in that rc file.
 
+### Your shell's own aliases
+
+Aliases and functions you already have are read at session start and completed
+like any other command. For bash the rc files are sourced explicitly —
+`~/.profile`, `~/.bash_profile`, `~/.bash_login`, `~/.bashrc`, `~/.bash_aliases`
+— rather than left to bash's own login/interactive rules, so it doesn't matter
+which of them you happened to put the alias in. A zsh session reads bash's set
+too, since the two rarely stay in sync.
+
+The table refreshes itself mid-session: run `alias`, `unalias`, or source
+anything, and termauto re-reads the shell after that command finishes. Editing
+`~/.bashrc` and sourcing it is enough — no restart.
+
+When an alias still doesn't show up:
+
+```sh
+termauto reinit
+```
+
+It regenerates the shell configs and then reports what each shell actually
+exposed, plus which bash startup files were readable:
+
+```
+✓ bash: 24 aliases, 11 functions
+✓ zsh: 31 aliases, 46 functions
+  bash startup files read: ~/.profile, ~/.bashrc, ~/.bash_aliases
+```
+
+A count of zero, or your file missing from that last line, says the alias never
+reached termauto — which is a different problem from one it read and mis-parsed.
+
 ### Parameterized command aliases
 
 Managed aliases let you save a whole command line and mark individual words as
