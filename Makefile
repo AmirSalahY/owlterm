@@ -1,6 +1,6 @@
 VENDOR := vendor/inshellisense
 
-.PHONY: setup shell-init specs test verify complete upstream patches clean
+.PHONY: setup shell-init specs test verify complete upstream patches release clean
 
 ## One-shot bootstrap on a new machine (idempotent — safe to re-run)
 setup:
@@ -10,6 +10,13 @@ setup:
 ## Append the auto-start hook to your shell rc (backs up + syntax-checks + rolls back)
 shell-init:
 	npm run shell-init
+
+## Cut a release: bump, tag, push, and wait for users to be notified
+## make release            (patch)
+## make release V=minor    (or major, or an explicit 1.2.3)
+## make release V=--dry-run
+release:
+	npm run release -- $(V)
 
 ## Recompile our specs after editing specs/src
 specs:

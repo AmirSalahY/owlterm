@@ -24,6 +24,7 @@
     "test:vendor": "cd vendor/inshellisense && npm test",
     "verify": "node scripts/verify.mjs",
     "shell-init": "node scripts/shell-init.mjs",
+    "release": "node scripts/release.mjs",
     "diagnose": "node scripts/diagnose.mjs"
   },
   "devDependencies": {
