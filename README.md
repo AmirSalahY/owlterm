@@ -318,6 +318,28 @@ vendor/             NOT committed — recreated by `npm run setup`
 **If you edit anything under `vendor/`, run `make patches` and commit the
 result.** Skipping it means the change works here and nowhere else.
 
+### Cutting a release
+
+```sh
+make release                # patch bump: 0.1.7 -> 0.1.8
+make release V=minor        # or major, or an explicit V=1.2.3
+make release V=--dry-run    # print every step, change nothing
+```
+
+It bumps `package.json`, commits as `chore: release X.Y.Z`, tags `vX.Y.Z` and
+pushes — the tag is what `.github/workflows/release.yml` turns into a GitHub
+release.
+
+That release is also the only thing that tells existing users anything: on shell
+start `scripts/check-update.mjs` reads the repo's latest release and prints the
+upgrade notice, so a tag that never publishes reaches nobody. The script
+therefore waits for the release to actually become _latest_ on that endpoint and
+fails loudly if it doesn't (`--no-wait` skips it). It also refuses to release a
+checkout whose `vendor/` work was never exported into `patches/`.
+
+Users see the notice on their next update check — within 6h, or immediately on
+`termauto update`.
+
 ---
 
 ## How it works
