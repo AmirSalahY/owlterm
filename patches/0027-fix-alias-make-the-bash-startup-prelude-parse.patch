@@ -1,0 +1,98 @@
+From fba1275e87d827a8b703f8cf01fb3de66dedb4e2 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Thu, 6 Aug 2026 16:13:56 +0300
+Subject: [PATCH 27/27] fix(alias): make the bash startup prelude parse
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The prelude that sources the user's bash startup files was assembled by
+joining its lines with "; ", which puts a semicolon straight after `do`.
+bash refuses to parse that, so the whole `-c` string was a syntax error:
+the shell exited 2 before listing anything and readBashDefinitions
+returned nothing at all. Every alias and function the user had defined
+was therefore unknown, and the highlighter painted each one as an
+invalid command.
+
+zsh accepts `do;`, and macOS sessions read zsh's own definitions first,
+so the broken bash half was invisible there — it only showed up where
+bash is the session shell.
+
+Join with newlines instead. The tests mocked the shell away, which is
+how a prelude no bash would accept survived them, so hand it to a real
+bash in -n mode as well.
+---
+ src/runtime/alias.ts            | 10 ++++++++--
+ src/tests/runtime/alias.test.ts | 17 ++++++++++++++++-
+ 2 files changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/src/runtime/alias.ts b/src/runtime/alias.ts
+index 7c08f8d..05ab104 100644
+--- a/src/runtime/alias.ts
++++ b/src/runtime/alias.ts
+@@ -50,12 +50,18 @@ const mergeDefinitions = (primary: ShellDefinitions, fallback: ShellDefinitions)
+  */
+ export const bashStartupFiles = ["~/.profile", "~/.bash_profile", "~/.bash_login", "~/.bashrc", "~/.bash_aliases"];
+ 
+-const bashStartupPrelude = [
++/**
++ * Joined with newlines, not `"; "`. A semicolon after `do` is a syntax error in
++ * bash — the whole `-c` string fails to parse, so the shell exits 2 having
++ * listed nothing and every alias silently disappears. zsh accepts `do;`, which
++ * is why this only ever showed up where bash is the session shell.
++ */
++export const bashStartupPrelude = [
+   `for __isterm_bash_startup in ${bashStartupFiles.join(" ")}; do`,
+   '  [ -r "$__isterm_bash_startup" ] && . "$__isterm_bash_startup"',
+   "done",
+   "unset __isterm_bash_startup",
+-].join("; ");
++].join("\n");
+ 
+ const readBashDefinitions = async (): Promise<ShellDefinitions> => {
+   // Windows goes through git bash, so the path needs quoting against spaces.
+diff --git a/src/tests/runtime/alias.test.ts b/src/tests/runtime/alias.test.ts
+index cd4113d..c113398 100644
+--- a/src/tests/runtime/alias.test.ts
++++ b/src/tests/runtime/alias.test.ts
+@@ -2,6 +2,7 @@
+ // Licensed under the MIT License.
+ 
+ import { jest } from "@jest/globals";
++import { spawnSync } from "node:child_process";
+ import { Shell } from "../../utils/shell";
+ 
+ const mockExecuteShellCommand = jest.fn();
+@@ -16,7 +17,7 @@ jest.unstable_mockModule("../../utils/config.js", () => ({
+   getConfig: mockGetConfig,
+ }));
+ 
+-const { aliasExpand, loadAliases, changesShellDefinitions, getAliasNames } = await import("../../runtime/alias.js");
++const { aliasExpand, loadAliases, changesShellDefinitions, getAliasNames, bashStartupPrelude } = await import("../../runtime/alias.js");
+ 
+ beforeEach(() => {
+   jest.clearAllMocks();
+@@ -138,6 +139,20 @@ describe("changesShellDefinitions", () => {
+   });
+ });
+ 
++// Everything else here mocks the shell away, which is how a prelude that no
++// bash would parse survived: the command is only ever a string in these tests.
++// So hand it to a real bash in syntax-check mode.
++describe("bashStartupPrelude", () => {
++  const bash = spawnSync("bash", ["--version"]);
++  const maybe = bash.error == null ? test : test.skip;
++
++  maybe("parses as bash", () => {
++    const { status, stderr } = spawnSync("bash", ["--noprofile", "--norc", "-n", "-c", `${bashStartupPrelude}; alias; declare -F`], { encoding: "utf8" });
++    expect(stderr).toBe("");
++    expect(status).toBe(0);
++  });
++});
++
+ describe("loadAliases", () => {
+   test("drops names the shell no longer defines", async () => {
+     mockGetConfig.mockReturnValue({ useAliases: true });
+-- 
+2.51.0
+
