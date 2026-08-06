@@ -1,7 +1,7 @@
 From 0f1722f88540c7a676a95df45fbbfcd45017e0dd Mon Sep 17 00:00:00 2001
 From: AmirSalahY <hello@noury.ch>
 Date: Sun, 2 Aug 2026 12:56:54 +0300
-Subject: [PATCH 08/24] fix(ui): widen unicode icon coverage, and document why
+Subject: [PATCH 08/25] fix(ui): widen unicode icon coverage, and document why
  it is the safe set
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -388,5 +388,5 @@ index 3bf4ea7..57a4872 100644
        "name": "-l",
        "priority": 50,
 -- 
-2.50.1 (Apple Git-155)
+2.51.0
 

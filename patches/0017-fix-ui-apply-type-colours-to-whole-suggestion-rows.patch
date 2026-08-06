@@ -1,7 +1,7 @@
 From 2c31c8a8c554cd81d3ad3cffb65d2ffbba4cb1d2 Mon Sep 17 00:00:00 2001
 From: AmirSalahY <amir@noury.ch>
 Date: Sun, 2 Aug 2026 19:17:51 +0300
-Subject: [PATCH 17/24] fix(ui): apply type colours to whole suggestion rows
+Subject: [PATCH 17/25] fix(ui): apply type colours to whole suggestion rows
 
 ---
  src/runtime/suggestion.ts   | 23 ++++++++++++++---------
@@ -151,5 +151,5 @@ index 379374b..d49ed88 100644
        suggestionWidth,
        this._boxStyle(),
 -- 
-2.50.1 (Apple Git-155)
+2.51.0
 

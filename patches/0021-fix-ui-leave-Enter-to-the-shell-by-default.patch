@@ -1,7 +1,7 @@
 From c07a72f588bd77f1d105e1d61b73c1933f15e914 Mon Sep 17 00:00:00 2001
 From: AmirSalahY <amir@noury.ch>
 Date: Wed, 5 Aug 2026 10:23:53 +0300
-Subject: [PATCH 21/24] fix(ui): leave Enter to the shell by default
+Subject: [PATCH 21/25] fix(ui): leave Enter to the shell by default
 
 ---
  src/index.ts                |  8 ++---
@@ -178,5 +178,5 @@ index d49ed88..bf603a6 100644
        return false;
      } else {
 -- 
-2.50.1 (Apple Git-155)
+2.51.0
 
