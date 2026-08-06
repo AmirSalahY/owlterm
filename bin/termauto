@@ -60,11 +60,12 @@ refresh_resources_if_needed() {
   fi
   [[ "$unpacked_version" == "$ISTERM_VERSION" ]] && return 0
 
-  # In a plain tsc build, reinit must run from the engine checkout so bundled
-  # shell files and specs resolve from vendor/inshellisense.
+  # In a plain tsc build, unpacking must run from the engine checkout so bundled
+  # shell files and specs resolve from vendor/inshellisense. Call unpackResources
+  # directly instead of `reinit`, which deletes the old resource tree first.
   if ! (
     cd "$(dirname "$ENTRY")/.." || exit 1
-    node "$ENTRY" reinit >/dev/null
+    node --input-type=module -e 'import { unpackResources } from "./build/utils/node.js"; await unpackResources();'
   ); then
     echo "termauto: resources out of date and automatic reinit failed. Run: termauto reinit" >&2
     exit 1
