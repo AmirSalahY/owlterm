@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# termauto — launcher for the vendored inshellisense engine.
+# owlterm — launcher for the vendored inshellisense engine.
 #
-# Deliberately thin. The COMMAND is branded `termauto`; the on-disk locations are
+# Deliberately thin. The COMMAND is branded `owlterm`; the on-disk locations are
 # not, because renaming those means touching utils/constants.ts and
 # utils/config.ts and manufacturing upstream merge conflicts for cosmetic gain.
 # So config still lives at the upstream location:
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # Resolve symlinks before deriving ROOT. This script is normally reached through a
-# symlink (~/.local/bin/termauto, which the generated shell init invokes by bare
+# symlink (~/.local/bin/owlterm, which the generated shell init invokes by bare
 # name), and without resolving it ROOT would point at the symlink's directory
 # instead of the checkout. Done as a loop rather than `readlink -f` for portability.
 SELF="${BASH_SOURCE[0]}"
@@ -26,21 +26,21 @@ done
 
 ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
 ENTRY="$ROOT/vendor/inshellisense/build/index.js"
-DEFAULT_CONFIG="$ROOT/termauto.config.json"
+DEFAULT_CONFIG="$ROOT/owlterm.config.json"
 UPDATE_CHECK="$ROOT/scripts/check-update.mjs"
 UPDATE="$ROOT/scripts/update.mjs"
 
 if [[ ! -f "$ENTRY" ]]; then
-  echo "termauto: engine not built. Run: npm run setup" >&2
+  echo "owlterm: engine not built. Run: npm run setup" >&2
   exit 1
 fi
 
 # Two things read this: commander, for the name it prints in usage and errors;
 # and getShellConfig, for the bare name it bakes into the generated init scripts
 # under ~/.inshellisense/init/. Exporting it here means those scripts are always
-# regenerated pointing at `termauto`, never at upstream's `is`.
-export ISTERM_LAUNCHER="termauto"
-export TERMAUTO_DEFAULT_CONFIG="$DEFAULT_CONFIG"
+# regenerated pointing at `owlterm`, never at upstream's `is`.
+export ISTERM_LAUNCHER="owlterm"
+export OWLTERM_DEFAULT_CONFIG="$DEFAULT_CONFIG"
 
 # The engine's own version string is a `__VERSION__` placeholder that only
 # upstream's single-executable packaging substitutes, so under a plain tsc build
@@ -67,7 +67,7 @@ refresh_resources_if_needed() {
     cd "$(dirname "$ENTRY")/.." || exit 1
     node --input-type=module -e 'import { unpackResources } from "./build/utils/node.js"; await unpackResources();'
   ); then
-    echo "termauto: resources out of date and automatic reinit failed. Run: termauto reinit" >&2
+    echo "owlterm: resources out of date and automatic reinit failed. Run: owlterm reinit" >&2
     exit 1
   fi
 }
@@ -94,10 +94,10 @@ for arg in "$@"; do
       ;;
   esac
 done
-if [[ "$should_check_updates" == true && -t 2 && "${TERMAUTO_UPDATE_CHECK:-1}" != "0" && -f "$UPDATE_CHECK" ]]; then
+if [[ "$should_check_updates" == true && -t 2 && "${OWLTERM_UPDATE_CHECK:-1}" != "0" && -f "$UPDATE_CHECK" ]]; then
   # Do not make a new terminal wait on GitHub or DNS. The helper has its own
   # timeout and cache; run it beside startup so a cold check cannot block prompt.
-  (TERMAUTO_UPDATE_OUTPUT=/dev/tty node "$UPDATE_CHECK" "$ROOT" </dev/null >/dev/null 2>/dev/null || true) &
+  (OWLTERM_UPDATE_OUTPUT=/dev/tty node "$UPDATE_CHECK" "$ROOT" </dev/null >/dev/null 2>/dev/null || true) &
 fi
 
 if [[ "$should_check_updates" == true ]]; then

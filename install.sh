@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# termauto installer.
+# owlterm installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/AmirSalahY/termauto/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/AmirSalahY/owlterm/main/install.sh | bash
 #
 # Clones this repo, then hands off to scripts/setup.mjs, which does the real work:
 # fetches the pinned engine, applies patches/, builds, unpacks the spec corpus and
-# links `termauto` onto PATH. Re-running is safe — an existing checkout is updated
+# links `owlterm` onto PATH. Re-running is safe — an existing checkout is updated
 # in place rather than re-cloned.
 #
 # Environment:
-#   TERMAUTO_HOME   where to keep the checkout   (default ~/.termauto/src)
-#   TERMAUTO_REF    branch, tag or commit to use (default main)
-#   TERMAUTO_REPO   clone URL                    (default this repo on GitHub)
+#   OWLTERM_HOME   where to keep the checkout   (default ~/.owlterm/src)
+#   OWLTERM_REF    branch, tag or commit to use (default main)
+#   OWLTERM_REPO   clone URL                    (default this repo on GitHub)
 set -euo pipefail
 
-REPO="${TERMAUTO_REPO:-https://github.com/AmirSalahY/termauto.git}"
-REF="${TERMAUTO_REF:-main}"
-HOME_DIR="${TERMAUTO_HOME:-$HOME/.termauto/src}"
+REPO="${OWLTERM_REPO:-https://github.com/AmirSalahY/owlterm.git}"
+REF="${OWLTERM_REF:-main}"
+HOME_DIR="${OWLTERM_HOME:-$HOME/.owlterm/src}"
+LEGACY_HOME_DIR="$HOME/.termauto/src"
 
 # Colours only when stdout is a terminal — this script is routinely piped.
 if [[ -t 1 ]]; then
@@ -29,6 +30,19 @@ say()  { printf '%s\n' "${B}==>${N} $*"; }
 ok()   { printf '  %s✓%s %s\n' "$G" "$N" "$*"; }
 warn() { printf '  %s!%s %s\n' "$Y" "$N" "$*"; }
 die()  { printf '  %s✗%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
+
+# ── Migrate a pre-rename checkout ─────────────────────────────────────────────
+# termauto was renamed to owlterm. Someone re-running this installer with no
+# OWLTERM_HOME override, who still has the old ~/.termauto/src checkout and no
+# ~/.owlterm/src yet, gets it moved rather than a confusing second clone.
+if [[ -z "${OWLTERM_HOME:-}" && -d "$LEGACY_HOME_DIR/.git" && ! -e "$HOME_DIR" ]]; then
+  say "Migrating $LEGACY_HOME_DIR -> $HOME_DIR"
+  mkdir -p "$(dirname "$HOME_DIR")"
+  mv "$LEGACY_HOME_DIR" "$HOME_DIR"
+  rmdir "$(dirname "$LEGACY_HOME_DIR")" 2>/dev/null || true
+  ok "moved"
+  printf '  %sthis tool is now called `owlterm` (was `termauto`) — the command on your PATH will change to match.%s\n' "$Y" "$N"
+fi
 
 # ── Prerequisites ─────────────────────────────────────────────────────────────
 say "Checking prerequisites"
@@ -78,16 +92,16 @@ npm run --silent setup
 # ── Report ────────────────────────────────────────────────────────────────────
 printf '\n%sInstalled.%s\n\n' "$B" "$N"
 
-if command -v termauto >/dev/null 2>&1; then
-  ok "\`termauto\` is on your PATH"
-  printf '\nStart a session:\n\n  termauto\n\n'
+if command -v owlterm >/dev/null 2>&1; then
+  ok "\`owlterm\` is on your PATH"
+  printf '\nStart a session:\n\n  owlterm\n\n'
 else
   # setup.mjs prints the specific reason (nothing writable on PATH, or a
   # conflicting binary); don't guess at it here, just point at the fallback.
-  warn "\`termauto\` is not on your PATH yet — see the setup output above"
-  printf '\nStart a session with the full path:\n\n  %s/bin/termauto\n\n' "$HOME_DIR"
+  warn "\`owlterm\` is not on your PATH yet — see the setup output above"
+  printf '\nStart a session with the full path:\n\n  %s/bin/owlterm\n\n' "$HOME_DIR"
 fi
 
 printf 'To start it automatically in every new shell:\n\n'
 printf '  cd %s && npm run shell-init\n\n' "$HOME_DIR"
-printf 'To uninstall, remove %s and the termauto block from your shell rc file.\n' "$HOME_DIR"
+printf 'To uninstall, remove %s and the owlterm block from your shell rc file.\n' "$HOME_DIR"

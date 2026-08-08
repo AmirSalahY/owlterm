@@ -25,7 +25,7 @@ export const loadBundledSpec = async (name: string): Promise<Fig.Subcommand> => 
   const mod = await import(url);
   const spec = mod.default;
   if (typeof spec !== "object" || spec == null) {
-    throw new Error(`termauto: bundled spec '${name}' is not a plain object (got ${typeof spec})`);
+    throw new Error(`owlterm: bundled spec '${name}' is not a plain object (got ${typeof spec})`);
   }
   return spec as Fig.Subcommand;
 };
@@ -42,7 +42,7 @@ const optionNames = (o: Fig.Option): string[] => (Array.isArray(o.name) ? o.name
 export const patchOptionArg = (spec: Fig.Subcommand, optionName: string, args: Fig.Arg): Fig.Subcommand => {
   const option = (spec.options ?? []).find((o) => optionNames(o).includes(optionName));
   if (!option) {
-    throw new Error(`termauto: option '${optionName}' not found in spec '${String(spec.name)}' — did upstream rename it?`);
+    throw new Error(`owlterm: option '${optionName}' not found in spec '${String(spec.name)}' — did upstream rename it?`);
   }
   option.args = args;
   return spec;

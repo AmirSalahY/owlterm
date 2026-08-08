@@ -35,7 +35,7 @@ verify:
 
 ## Headless completion probe: make complete Q="adb -s "
 complete:
-	@./bin/termauto complete "$(Q)"
+	@./bin/owlterm complete "$(Q)"
 
 ## Replay our patches onto the latest upstream, then re-export them
 upstream:

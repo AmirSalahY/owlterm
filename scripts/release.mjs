@@ -16,10 +16,10 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const VENDOR = path.join(ROOT, "vendor", "inshellisense");
-const REPO = process.env.TERMAUTO_UPDATE_REPO ?? "AmirSalahY/termauto";
-const API_URL = process.env.TERMAUTO_UPDATE_URL ?? `https://api.github.com/repos/${REPO}/releases/latest`;
+const REPO = process.env.OWLTERM_UPDATE_REPO ?? "AmirSalahY/owlterm";
+const API_URL = process.env.OWLTERM_UPDATE_URL ?? `https://api.github.com/repos/${REPO}/releases/latest`;
 // The workflow checks out, installs, builds specs and calls the GitHub API.
-const PUBLISH_TIMEOUT_MS = Number(process.env.TERMAUTO_RELEASE_TIMEOUT_MS ?? 10 * 60 * 1000);
+const PUBLISH_TIMEOUT_MS = Number(process.env.OWLTERM_RELEASE_TIMEOUT_MS ?? 10 * 60 * 1000);
 const POLL_INTERVAL_MS = 10_000;
 
 const args = process.argv.slice(2);
@@ -95,7 +95,7 @@ const preflight = (tag) => {
 
 const fetchLatestTag = async () => {
   const response = await fetch(API_URL, {
-    headers: { Accept: "application/vnd.github+json", "User-Agent": `termauto/${packageVersion()}` },
+    headers: { Accept: "application/vnd.github+json", "User-Agent": `owlterm/${packageVersion()}` },
   });
   if (!response.ok) return undefined;
   return (await response.json())?.tag_name;
@@ -132,7 +132,7 @@ const main = async () => {
   const current = packageVersion();
   const version = nextVersion(current);
   const tag = `v${version}`;
-  console.log(`Releasing termauto ${current} -> ${version}${dryRun ? " (dry run)" : ""}\n`);
+  console.log(`Releasing owlterm ${current} -> ${version}${dryRun ? " (dry run)" : ""}\n`);
 
   const branch = preflight(tag);
 
@@ -151,7 +151,7 @@ const main = async () => {
   }
 
   if (await awaitPublished(tag)) {
-    console.log(`Published ${tag}. Users are notified on their next update check (within ${process.env.TERMAUTO_UPDATE_TTL_MS ? "the configured TTL" : "6h"}), or immediately via \`termauto update\`.`);
+    console.log(`Published ${tag}. Users are notified on their next update check (within ${process.env.OWLTERM_UPDATE_TTL_MS ? "the configured TTL" : "6h"}), or immediately via \`owlterm update\`.`);
     return;
   }
   die(

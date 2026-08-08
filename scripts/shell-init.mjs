@@ -13,10 +13,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const MARKER = "termauto (inshellisense)";
+const MARKER = "owlterm (inshellisense)";
+// termauto was renamed to owlterm. An rc file from before the rename still
+// carries the old marker, and its block behaves identically (it only sources
+// ~/.inshellisense/init/<shell>/init.<ext>, unaffected by the rename) — so
+// treat it as already installed rather than appending a second, redundant block.
+const LEGACY_MARKER = "termauto (inshellisense)";
 
 /** The command name the generated init script re-execs. Must match setup.mjs. */
-const CMD = "termauto";
+const CMD = "owlterm";
 
 const SHELLS = {
   zsh: {
@@ -65,7 +70,7 @@ if (!shell) {
   process.exit(1);
 }
 
-// The generated init script invokes the engine by the bare name `termauto`;
+// The generated init script invokes the engine by the bare name `owlterm`;
 // without that on PATH nothing starts and there is no visible error. Fail loudly
 // rather than write a dead hook.
 try {
@@ -78,9 +83,16 @@ try {
 
 const { rc, block, check } = shell;
 
-if (fs.existsSync(rc) && fs.readFileSync(rc, "utf-8").includes(MARKER)) {
-  console.log(`✓ already present in ${rc} — nothing to do`);
-  process.exit(0);
+if (fs.existsSync(rc)) {
+  const rcBody = fs.readFileSync(rc, "utf-8");
+  if (rcBody.includes(MARKER)) {
+    console.log(`✓ already present in ${rc} — nothing to do`);
+    process.exit(0);
+  }
+  if (rcBody.includes(LEGACY_MARKER)) {
+    console.log(`✓ already present in ${rc} (from before the termauto -> owlterm rename) — nothing to do`);
+    process.exit(0);
+  }
 }
 
 if (dryRun) {
@@ -89,7 +101,7 @@ if (dryRun) {
 }
 
 const original = fs.existsSync(rc) ? fs.readFileSync(rc, "utf-8") : "";
-const backup = `${rc}.pre-termauto-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+const backup = `${rc}.pre-owlterm-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 if (original) fs.writeFileSync(backup, original);
 
 fs.writeFileSync(rc, original + block);

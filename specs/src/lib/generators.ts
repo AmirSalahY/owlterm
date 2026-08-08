@@ -1,4 +1,4 @@
-// Shared generators for termauto specs.
+// Shared generators for owlterm specs.
 //
 // LATENCY IS THE PRIME CONSTRAINT: every generator here runs on the keystroke
 // path. Two rules:
@@ -90,7 +90,7 @@ export const adbDevices: Fig.Generator = {
   ],
   // Devices are global, not per-directory — a fixed cacheKey stops us
   // re-shelling once per directory for the same answer.
-  cache: { ttl: 5_000, strategy: "max-age", cacheKey: "termauto:adb-devices" },
+  cache: { ttl: 5_000, strategy: "max-age", cacheKey: "owlterm:adb-devices" },
   postProcess: (out) =>
     out
       .split("\n")
@@ -144,7 +144,7 @@ export const xcodeSchemes: Fig.Generator = {
 export const simulators: Fig.Generator = {
   script: ["xcrun", "simctl", "list", "devices", "available", "-j"],
   scriptTimeout: 15_000,
-  cache: { ttl: 60_000, strategy: "max-age", cacheKey: "termauto:simctl-devices" },
+  cache: { ttl: 60_000, strategy: "max-age", cacheKey: "owlterm:simctl-devices" },
   postProcess: (out) => {
     try {
       const byRuntime = JSON.parse(out)?.devices ?? {};

@@ -1,4 +1,4 @@
-// Custom spec: termauto itself.
+// Custom spec: owlterm itself.
 //
 // Neither Fig nor upstream ships a spec for this CLI under any name — `is` and
 // `inshellisense` are both absent from the corpus — so completing our own tool
@@ -27,7 +27,7 @@ const aliasShells = sessionShells.filter((s) => s.name === "bash" || s.name === 
 const helpOption: Fig.Option = { name: ["-h", "--help"], description: "Display help for command" };
 
 const spec: Fig.Spec = {
-  name: "termauto",
+  name: "owlterm",
   description: "IDE style command line auto complete",
   subcommands: [
     {
@@ -127,7 +127,7 @@ const spec: Fig.Spec = {
     },
     {
       name: "update",
-      description: "Update termauto to the latest GitHub Release tag",
+      description: "Update owlterm to the latest GitHub Release tag",
       options: [helpOption],
     },
     {

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// termauto bootstrap — idempotent, safe to re-run.
+// owlterm bootstrap — idempotent, safe to re-run.
 //
 // vendor/ is intentionally NOT committed (it keeps its own git repo so our patches
 // stay rebasable). So on a fresh machine there is no engine at all, and our vendor
@@ -11,8 +11,8 @@
 //   3. npm ci && build
 //   4. unpack the Fig spec corpus into ~/.inshellisense/spec
 //   5. compile our specs
-//   6. link bin/termauto onto PATH as `termauto`
-//   7. regenerate the shell init scripts so they invoke `termauto`, and retire
+//   6. link bin/owlterm onto PATH as `owlterm`
+//   7. regenerate the shell init scripts so they invoke `owlterm`, and retire
 //      any leftover `is` link from before the rename
 //   8. write (or tell you how to merge) ~/.config/inshellisense/rc.toml with the
 //      absolute specs path for THIS machine
@@ -25,14 +25,14 @@ const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..")
 const VENDOR = path.join(ROOT, "vendor", "inshellisense");
 const PATCHES = path.join(ROOT, "patches");
 const SPECS_BUILD = path.join(ROOT, "specs", "build");
-const DEFAULT_CONFIG_PATH = path.join(ROOT, "termauto.config.json");
+const DEFAULT_CONFIG_PATH = path.join(ROOT, "owlterm.config.json");
 const DEFAULT_CONFIG = JSON.parse(fs.readFileSync(DEFAULT_CONFIG_PATH, "utf-8"));
 
 /** The command name we install. Also baked into the generated shell init scripts. */
-const CMD = "termauto";
+const CMD = "owlterm";
 
 /**
- * Must be the same string bin/termauto exports as ISTERM_VERSION — the engine
+ * Must be the same string bin/owlterm exports as ISTERM_VERSION — the engine
  * stamps it into ~/.inshellisense/version.txt at unpack time and refuses to start
  * a session when the two disagree. Read from the same package.json the launcher
  * reads, so there is one source of truth rather than two that can drift.
@@ -85,7 +85,7 @@ step(2, "Fetching the engine");
     sh("git", ["-C", VENDOR, "remote", "rename", "origin", "upstream"]);
     // Detach at the pinned commit, then replay our patches on top as real commits
     // so `git rebase upstream/main` stays the upgrade path.
-    sh("git", ["-C", VENDOR, "checkout", "-q", "-B", "termauto", PINNED_COMMIT]);
+    sh("git", ["-C", VENDOR, "checkout", "-q", "-B", "owlterm", PINNED_COMMIT]);
 
     const patches = fs.existsSync(PATCHES)
       ? fs.readdirSync(PATCHES).filter((f) => f.endsWith(".patch")).sort()
@@ -94,7 +94,7 @@ step(2, "Fetching the engine");
       warn("no patches/ found — running unpatched upstream (frecency will be absent)");
     } else {
       // `git am` needs an identity; a clone may have none configured.
-      const ident = ["-c", "user.name=termauto", "-c", "user.email=termauto@localhost"];
+      const ident = ["-c", "user.name=owlterm", "-c", "user.email=owlterm@localhost"];
       sh("git", ["-C", VENDOR, ...ident, "am", ...patches.map((p) => path.join(PATCHES, p))]);
       ok(`applied ${patches.length} patch(es) on top of ${PINNED_COMMIT}`);
     }
@@ -119,10 +119,10 @@ step(4, "Unpacking the bundled spec corpus");
   // returns nothing. Upstream calls this inside `is init` but un-awaited, so we
   // invoke it directly.
   //
-  // ISTERM_VERSION must match what bin/termauto exports. unpackResources() stamps
+  // ISTERM_VERSION must match what bin/owlterm exports. unpackResources() stamps
   // ~/.inshellisense/version.txt with getVersion(), and every session start
   // compares the two; on a mismatch the engine prints "resources out of date" and
-  // exits(1) — which, since the shell hook is `termauto -s zsh ; exit`, closes
+  // exits(1) — which, since the shell hook is `owlterm -s zsh ; exit`, closes
   // the terminal. Unpacking under a different version than the launcher reports
   // makes that happen on EVERY new shell.
   sh("node", ["--input-type=module", "-e", 'import { unpackResources } from "./build/utils/node.js"; await unpackResources();'], {
@@ -140,17 +140,17 @@ step(4, "Unpacking the bundled spec corpus");
 }
 
 // ── 5. Our specs ──────────────────────────────────────────────────────────────
-step(5, "Compiling termauto specs");
+step(5, "Compiling owlterm specs");
 sh("npm", ["run", "build:specs"], { cwd: ROOT });
 
-// ── 6. `termauto` on PATH ─────────────────────────────────────────────────────
+// ── 6. `owlterm` on PATH ─────────────────────────────────────────────────────
 step(6, `Linking the \`${CMD}\` launcher onto PATH`);
 let linkedOnPath = false;
 {
   // The generated shell-init script invokes the engine by BARE NAME
-  // (`termauto -s zsh ; exit`). Without that name resolvable, auto-start fails in
+  // (`owlterm -s zsh ; exit`). Without that name resolvable, auto-start fails in
   // every new shell — the dropdown just never appears, with no obvious cause. So
-  // the launcher has to be reachable as `termauto`, not only as ./bin/termauto.
+  // the launcher has to be reachable as `owlterm`, not only as ./bin/owlterm.
   const launcher = path.join(ROOT, "bin", CMD);
   fs.chmodSync(launcher, 0o755);
 
@@ -249,19 +249,25 @@ step(7, "Regenerating the shell init scripts");
     warn(`could not regenerate init scripts: ${e.message}`);
   }
 
-  // Retire the pre-rename `is` link, but only once its replacement is in place
-  // and only if it is ours — an unrelated `is` binary must survive untouched.
+  // Retire links from before a rename (`is` -> `termauto` -> `owlterm`), but only
+  // once the replacement is in place and only if it is ours — an unrelated
+  // binary of the same name must survive untouched. Its old target is very
+  // likely gone by now (the launcher file itself was renamed), so compare the
+  // raw symlink target rather than realpath, which would throw ENOENT on a
+  // dangling link and skip it.
   if (linkedOnPath && process.platform !== "win32") {
-    const launcher = path.join(ROOT, "bin", CMD);
     for (const dir of [path.join(os.homedir(), ".local", "bin"), path.join(os.homedir(), "bin"), "/usr/local/bin"]) {
-      const legacy = path.join(dir, "is");
-      try {
-        if (!fs.lstatSync(legacy, { throwIfNoEntry: false })?.isSymbolicLink()) continue;
-        if (fs.realpathSync(legacy) !== fs.realpathSync(launcher)) continue;
-        fs.rmSync(legacy);
-        ok(`removed the old \`is\` link at ${legacy}`);
-      } catch {
-        continue; // dangling, unreadable or not ours — leave it alone
+      for (const legacyName of ["is", "termauto"]) {
+        const legacy = path.join(dir, legacyName);
+        const expectedTarget = path.join(ROOT, "bin", legacyName);
+        try {
+          if (!fs.lstatSync(legacy, { throwIfNoEntry: false })?.isSymbolicLink()) continue;
+          if (fs.readlinkSync(legacy) !== expectedTarget) continue;
+          fs.rmSync(legacy);
+          ok(`removed the old \`${legacyName}\` link at ${legacy}`);
+        } catch {
+          continue; // dangling, unreadable or not ours — leave it alone
+        }
       }
     }
   }
@@ -290,7 +296,7 @@ path = ["${SPECS_BUILD}"]
   const existing = [xdg, legacy].filter((p) => fs.existsSync(p));
   if (existing.length === 0) {
     fs.mkdirSync(path.dirname(xdg), { recursive: true });
-    fs.writeFileSync(xdg, `# Generated by termauto setup on this machine.\n${block}`);
+    fs.writeFileSync(xdg, `# Generated by owlterm setup on this machine.\n${block}`);
     ok(`wrote ${xdg}`);
   } else {
     const alreadyPointed = existing.some((p) => fs.readFileSync(p, "utf-8").includes(SPECS_BUILD));

@@ -1,5 +1,5 @@
 {
-  "name": "termauto",
+  "name": "owlterm",
   "version": "0.1.8",
   "private": true,
   "type": "module",
@@ -7,11 +7,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AmirSalahY/termauto.git"
+    "url": "git+https://github.com/AmirSalahY/owlterm.git"
   },
-  "homepage": "https://github.com/AmirSalahY/termauto#readme",
+  "homepage": "https://github.com/AmirSalahY/owlterm#readme",
   "bin": {
-    "termauto": "bin/termauto"
+    "owlterm": "bin/owlterm"
   },
   "engines": {
     "node": ">=18.0 <23.0.0"

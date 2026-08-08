@@ -9,17 +9,17 @@ import path from "node:path";
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 
 /** The command name the generated init script re-execs. Must match setup.mjs. */
-const CMD = "termauto";
+const CMD = "owlterm";
 
 const ok = (m) => console.log(`  \x1b[32m✓\x1b[0m ${m}`);
 const bad = (m) => console.log(`  \x1b[31m✗\x1b[0m ${m}`);
 const info = (m) => console.log(`  \x1b[33m·\x1b[0m ${m}`);
 
-console.log("\n\x1b[1mtermauto diagnostics\x1b[0m");
+console.log("\n\x1b[1mowlterm diagnostics\x1b[0m");
 
 // 1. Are we inside a wrapped session? This is THE question — if not, no dropdown
 // can ever appear, and the cause is the shell hook, not the renderer.
-console.log("\n[1] Inside a termauto/inshellisense session?");
+console.log("\n[1] Inside a owlterm/inshellisense session?");
 if (process.env.ISTERM) ok(`yes — ISTERM=${process.env.ISTERM}`);
 else {
   bad("no — ISTERM is unset, so the shell was never wrapped");
@@ -33,7 +33,7 @@ info(`TERM=${process.env.TERM ?? "(unset)"}  TERM_PROGRAM=${process.env.TERM_PRO
 if (process.env.VSCODE_RESOLVING_ENVIRONMENT) info("VSCODE_RESOLVING_ENVIRONMENT set — the hook intentionally skips this pass");
 if (process.env.TERM === "dumb") bad("TERM=dumb — no dropdown is possible");
 
-// 3. The hook invokes the engine by the bare name `termauto`.
+// 3. The hook invokes the engine by the bare name `owlterm`.
 console.log(`\n[3] \`${CMD}\` resolvable on PATH`);
 try {
   const p = execFileSync("sh", ["-c", `command -v ${CMD}`], { encoding: "utf8" }).trim();

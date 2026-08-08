@@ -4,11 +4,11 @@ import os from "node:os";
 import path from "node:path";
 
 const ROOT = process.argv[2] ?? process.cwd();
-const REPO = process.env.TERMAUTO_UPDATE_REPO ?? "AmirSalahY/termauto";
-const URL = process.env.TERMAUTO_UPDATE_URL ?? `https://api.github.com/repos/${REPO}/releases/latest`;
-const CACHE = path.join(os.homedir(), ".termauto", "update-check.json");
-const TTL_MS = Number(process.env.TERMAUTO_UPDATE_TTL_MS ?? 6 * 60 * 60 * 1000);
-const TIMEOUT_MS = Number(process.env.TERMAUTO_UPDATE_TIMEOUT_MS ?? 1200);
+const REPO = process.env.OWLTERM_UPDATE_REPO ?? "AmirSalahY/owlterm";
+const URL = process.env.OWLTERM_UPDATE_URL ?? `https://api.github.com/repos/${REPO}/releases/latest`;
+const CACHE = path.join(os.homedir(), ".owlterm", "update-check.json");
+const TTL_MS = Number(process.env.OWLTERM_UPDATE_TTL_MS ?? 6 * 60 * 60 * 1000);
+const TIMEOUT_MS = Number(process.env.OWLTERM_UPDATE_TIMEOUT_MS ?? 1200);
 
 const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 
@@ -63,7 +63,7 @@ const writeCache = (release) => {
 };
 
 const writeNotice = (message) => {
-  const output = process.env.TERMAUTO_UPDATE_OUTPUT;
+  const output = process.env.OWLTERM_UPDATE_OUTPUT;
   if (output) {
     try {
       fs.writeFileSync(output, message, { flag: "a" });
@@ -83,7 +83,7 @@ const fetchRelease = async () => {
       signal: controller.signal,
       headers: {
         Accept: "application/vnd.github+json",
-        "User-Agent": `termauto/${currentVersion() ?? "unknown"}`,
+        "User-Agent": `owlterm/${currentVersion() ?? "unknown"}`,
       },
     });
     if (!response.ok) return undefined;
@@ -109,7 +109,7 @@ const main = async () => {
   const release = readCache() ?? (await fetchRelease());
   if (!release?.version || compareVersions(release.version, current) <= 0) return;
 
-  writeNotice(`\ntermauto ${release.version} is available; current is ${current}.\nRun: termauto update\n\n`);
+  writeNotice(`\nowlterm ${release.version} is available; current is ${current}.\nRun: owlterm update\n\n`);
 };
 
 await main();
