@@ -1,0 +1,37 @@
+From 3254766cca4676ab975e024cab0ab2f3cca586e4 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Sun, 9 Aug 2026 17:07:24 +0300
+Subject: [PATCH 32/32] alias: stop pointing people at an eval in their rc file
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`eval "$(owlterm alias init)"` is the right thing to run once in the shell
+you are standing in, and the wrong thing to put in a profile: it starts a
+node process on every new terminal — 113ms measured — to print a handful of
+function definitions that only change when the alias store does.
+
+Say so at the point where someone has just created an alias and is deciding
+where to put the line, and point at the cached form in the README.
+---
+ src/commands/alias.ts | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/commands/alias.ts b/src/commands/alias.ts
+index 975a596..9ef2eac 100644
+--- a/src/commands/alias.ts
++++ b/src/commands/alias.ts
+@@ -104,6 +104,10 @@ const setAction = (program: Command) => async (name: string, commandParts: strin
+       process.stdout.write(`Parameters: ${saved.parameters.map((parameter) => parameter.name).join(", ")}\n`);
+     }
+     process.stdout.write(`Enable it in bash/zsh with: eval "$(${launcherName()} alias init)"\n`);
++    // The eval above is fine for the current shell. For an rc file it is not:
++    // it starts a node process on every new terminal to print output that only
++    // changes when this store does, so point at the cached form instead.
++    process.stdout.write(`To keep it across shells, see "managed aliases" in the README — cache it rather than eval it in your rc file.\n`);
+   } catch (error) {
+     program.error(error instanceof Error ? error.message : String(error), { exitCode: 1 });
+   } finally {
+-- 
+2.51.0
+

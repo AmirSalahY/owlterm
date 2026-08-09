@@ -130,6 +130,21 @@ eval "$(owlterm alias init)"     # enable the generated shell functions
 change-alias https://new.example.app
 ```
 
+To keep them enabled in every shell, put this in your rc file rather than the
+bare `eval` above. `alias init` starts a node process, which costs ~110ms on
+every new terminal to print a few lines that only change when you add or remove
+an alias — so cache it and rebuild only when the store is newer:
+
+```sh
+if [[ -f ~/.inshellisense/managed-aliases.json ]]; then
+  _owlterm_aliases=~/.inshellisense/init/aliases.sh
+  [[ -s $_owlterm_aliases && $_owlterm_aliases -nt ~/.inshellisense/managed-aliases.json ]] ||
+    owlterm alias init zsh > $_owlterm_aliases
+  source $_owlterm_aliases
+  unset _owlterm_aliases
+fi
+```
+
 ---
 
 ## ⌨️ Your shell's own aliases
