@@ -84,6 +84,13 @@ step(1, "Checking Node version");
 // ── 2. Vendor engine ──────────────────────────────────────────────────────────
 step(2, "Fetching the engine");
 {
+  const git = (...args) => run("git", ["-C", VENDOR, ...args], { encoding: "utf8" }).trim();
+  // `git am` needs an identity; a clone may have none configured.
+  const ident = ["-c", "user.name=owlterm", "-c", "user.email=owlterm@localhost"];
+  const applyPatches = (patches) => sh("git", ["-C", VENDOR, ...ident, "am", "--3way", ...patches.map((p) => path.join(PATCHES, p))]);
+
+  const patches = fs.existsSync(PATCHES) ? fs.readdirSync(PATCHES).filter((f) => f.endsWith(".patch")).sort() : [];
+
   const alreadyCloned = fs.existsSync(path.join(VENDOR, ".git"));
   if (!alreadyCloned) {
     fs.mkdirSync(path.dirname(VENDOR), { recursive: true });
@@ -93,19 +100,32 @@ step(2, "Fetching the engine");
     // so `git rebase upstream/main` stays the upgrade path.
     sh("git", ["-C", VENDOR, "checkout", "-q", "-B", "owlterm", PINNED_COMMIT]);
 
-    const patches = fs.existsSync(PATCHES)
-      ? fs.readdirSync(PATCHES).filter((f) => f.endsWith(".patch")).sort()
-      : [];
     if (patches.length === 0) {
       warn("no patches/ found — running unpatched upstream (frecency will be absent)");
     } else {
-      // `git am` needs an identity; a clone may have none configured.
-      const ident = ["-c", "user.name=owlterm", "-c", "user.email=owlterm@localhost"];
-      sh("git", ["-C", VENDOR, ...ident, "am", ...patches.map((p) => path.join(PATCHES, p))]);
+      applyPatches(patches);
       ok(`applied ${patches.length} patch(es) on top of ${PINNED_COMMIT}`);
     }
   } else {
-    ok("vendor/inshellisense already present (leaving its git history alone)");
+    // An existing vendor/ was never re-checked against patches/ — an `owlterm
+    // update` that added new patches left the engine running whatever series was
+    // applied whenever vendor/ was first cloned, silently, with no error. That
+    // shipped a launcher branded for a newer patch than the engine underneath it
+    // actually had (e.g. the termauto -> owlterm rebrand patch missing from the
+    // engine while the launcher already exported the new env var name), which
+    // crashed every session. Count what's actually applied and catch up.
+    const base = git("rev-parse", "upstream/main");
+    const applied = Number(git("rev-list", "--count", `${base}..HEAD`));
+    if (applied < patches.length) {
+      const missing = patches.slice(applied);
+      warn(`vendor/inshellisense has ${applied}/${patches.length} patches applied — catching up`);
+      applyPatches(missing);
+      ok(`applied ${missing.length} missing patch(es) (${patches.length}/${patches.length} now)`);
+    } else if (applied > patches.length) {
+      warn(`vendor/inshellisense has ${applied} local commit(s) but patches/ only describes ${patches.length} — leaving it alone (run \`make patches\` if those are unexported work)`);
+    } else {
+      ok(`vendor/inshellisense already present, ${applied}/${patches.length} patches applied`);
+    }
   }
 }
 
