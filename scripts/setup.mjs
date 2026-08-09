@@ -42,7 +42,13 @@ const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf
 const UPSTREAM = "https://github.com/microsoft/inshellisense";
 // Pinned so a rebuild months from now produces the same engine our patches were
 // written against. Bump deliberately via `npm run upstream`, never incidentally.
-const PINNED_COMMIT = "5c97e85";
+//
+// Was 5c97e85 — upstream rewrote its history at some point after we pinned it
+// (same PR, same tree, new SHA: "ci: update package location (#433)" is now
+// 6bd0ae7), which made a plain `git clone` fail with "not a commit" for anyone
+// installing fresh, since a normal clone only transfers objects reachable from
+// upstream's current refs.
+const PINNED_COMMIT = "6bd0ae7";
 
 const sh = (cmd, args, opts = {}) => run(cmd, args, { stdio: "inherit", encoding: "utf8", ...opts });
 
