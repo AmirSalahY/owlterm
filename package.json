@@ -1,6 +1,6 @@
 {
   "name": "owlterm",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "IDE-style terminal autocomplete for JS/RN/iOS/Android stacks, built on a fork of microsoft/inshellisense",
