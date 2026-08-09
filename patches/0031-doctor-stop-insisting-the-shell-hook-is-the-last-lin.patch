@@ -1,0 +1,109 @@
+From b700c1a6ce05b23abddf9f0511a4ac970334ac2e Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Sun, 9 Aug 2026 16:58:40 +0300
+Subject: [PATCH 31/31] doctor: stop insisting the shell hook is the last line
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The hook execs the wrapper and never returns, so whatever sits below it in
+the profile is unreachable for an interactive shell either way. Position
+therefore says nothing about whether the install works, and reporting a
+non-final hook as "incorrectly installed" sent people to rearrange a file
+region that never runs.
+
+It was also the wrong advice. Placed last, the outer shell evaluates the
+entire profile — plugin manager, compinit, version managers — before handing
+over, and the wrapped shell then evaluates the same file a second time. On a
+powerlevel10k + nvm + rvm profile that measured 3.3s to a usable prompt
+against 1.9s with the hook first.
+
+Check presence only, and drop the now-unreachable "incorrectly installed"
+branch with it.
+---
+ src/ui/ui-doctor.ts | 29 ++++++++---------------------
+ src/utils/shell.ts  | 15 ++++++++-------
+ 2 files changed, 16 insertions(+), 28 deletions(-)
+
+diff --git a/src/ui/ui-doctor.ts b/src/ui/ui-doctor.ts
+index c8dad42..752de67 100644
+--- a/src/ui/ui-doctor.ts
++++ b/src/ui/ui-doctor.ts
+@@ -121,29 +121,16 @@ const renderShellConfigIssues = (): number => {
+ };
+ 
+ const renderShellPluginIssues = async (): Promise<number> => {
+-  const { shellsWithoutPlugin, shellsWithBadPlugin } = await checkShellConfigPlugin();
++  const { shellsWithoutPlugin } = await checkShellConfigPlugin();
+   if (shellsWithoutPlugin.length == 0) {
+     process.stdout.write(chalk.green("✓") + " all shells have plugins\n");
+-  } else {
+-    process.stderr.write(chalk.red("•") + " the following shells do not have the plugin installed:\n");
+-    shellsWithoutPlugin.forEach((shell) => {
+-      process.stderr.write(chalk.red("  - ") + shell + "\n");
+-    });
+-    process.stderr.write(chalk.yellow("  review the README to generate the missing shell plugins, this warning can be ignored if you prefer manual startup\n"));
++    return 0;
+   }
+ 
+-  if (shellsWithBadPlugin.length == 0) {
+-    process.stdout.write(chalk.green("✓") + " all shells have correct plugins\n");
+-  } else {
+-    process.stderr.write(chalk.red("•") + " the following shells have plugins incorrectly installed:\n");
+-    shellsWithBadPlugin.forEach((shell) => {
+-      process.stderr.write(chalk.red("  - ") + shell + "\n");
+-    });
+-    process.stderr.write(chalk.yellow("  remove and regenerate the plugins according to the README, only whitespace can be after the shell plugins\n"));
+-  }
+-
+-  if (shellsWithoutPlugin.length > 0 || shellsWithBadPlugin.length > 0) {
+-    return 1;
+-  }
+-  return 0;
++  process.stderr.write(chalk.red("•") + " the following shells do not have the plugin installed:\n");
++  shellsWithoutPlugin.forEach((shell) => {
++    process.stderr.write(chalk.red("  - ") + shell + "\n");
++  });
++  process.stderr.write(chalk.yellow("  review the README to generate the missing shell plugins, this warning can be ignored if you prefer manual startup\n"));
++  return 1;
+ };
+diff --git a/src/utils/shell.ts b/src/utils/shell.ts
+index 9a4aaac..a0cbf77 100644
+--- a/src/utils/shell.ts
++++ b/src/utils/shell.ts
+@@ -85,24 +85,25 @@ export const checkLegacyConfigs = async (): Promise<Shell[]> => {
+ 
+ export const checkShellConfigPlugin = async () => {
+   const shellsWithoutPlugin: Shell[] = [];
+-  const shellsWithBadPlugin: Shell[] = [];
+   for (const shell of supportedShells) {
+     const profilePath = await getProfilePath(shell);
+     if (profilePath != null && fs.existsSync(profilePath)) {
+       const profile = await fsAsync.readFile(profilePath, "utf8");
+ 
+       const shellSourceCommand = getShellSourceCommand(shell).trim();
+-      const profileContainsSource = profile.includes(shellSourceCommand);
+-      const profileEndsWithSource = profile.trimEnd().endsWith(shellSourceCommand);
+ 
+-      if (!profileContainsSource) {
++      // Only presence is checked, not position. The hook execs the wrapper and
++      // never returns, so nothing after it in the profile ever runs — which makes
++      // "is it the last line" a question about a file region that is unreachable
++      // by construction. It is also the wrong advice: placed last, the outer shell
++      // evaluates the entire profile before handing over, and the wrapped shell
++      // then evaluates it a second time, doubling the cost of every new terminal.
++      if (!profile.includes(shellSourceCommand)) {
+         shellsWithoutPlugin.push(shell);
+-      } else if (!profileEndsWithSource) {
+-        shellsWithBadPlugin.push(shell);
+       }
+     }
+   }
+-  return { shellsWithoutPlugin, shellsWithBadPlugin };
++  return { shellsWithoutPlugin };
+ };
+ 
+ const getProfilePath = async (shell: Shell): Promise<string | undefined> => {
+-- 
+2.51.0
+

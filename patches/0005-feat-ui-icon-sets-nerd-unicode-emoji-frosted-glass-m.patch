@@ -1,7 +1,7 @@
 From 54ace7c64773b6091fc7aa90d4997c0eeecf09cb Mon Sep 17 00:00:00 2001
 From: AmirSalahY <hello@noury.ch>
 Date: Sun, 2 Aug 2026 12:14:04 +0300
-Subject: [PATCH 05/30] feat(ui): icon sets (nerd/unicode/emoji) + frosted
+Subject: [PATCH 05/31] feat(ui): icon sets (nerd/unicode/emoji) + frosted
  glass menu styling
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

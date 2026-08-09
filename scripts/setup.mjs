@@ -348,5 +348,6 @@ console.log(`  ${linkedOnPath ? CMD : path.join(ROOT, "bin", CMD)}\n`);
 console.log(`Then type \`git ch\` or \`yarn \` and the dropdown should appear.`);
 console.log(`To start it automatically in every new shell, run:\n`);
 console.log(`  npm run shell-init\n`);
-console.log(`It appends a guarded hook to ~/.zshrc — which must stay the LAST thing in`);
-console.log(`the file — after backing the file up and syntax-checking the result.\n`);
+console.log(`It puts a guarded hook at the TOP of ~/.zshrc — first, so a new terminal`);
+console.log(`evaluates the file once rather than twice — after backing the file up and`);
+console.log(`syntax-checking the result.\n`);

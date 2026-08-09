@@ -55,7 +55,7 @@ try {
   }
 }
 
-// 4. Hook present in the rc file, and last.
+// 4. Hook present in the rc file, and early enough to be worth having.
 console.log("\n[4] Shell hook in ~/.zshrc");
 const rc = path.join(os.homedir(), ".zshrc");
 if (!fs.existsSync(rc)) bad(`${rc} missing`);
@@ -65,11 +65,15 @@ else {
   if (idx === -1) bad("hook not found — run: npm run shell-init");
   else {
     ok(`found at line ${idx + 1} of ${lines.length}`);
-    const after = lines.slice(idx + 1).filter((l) => l.trim() && !l.trimStart().startsWith("#") && !l.trim().startsWith("fi"));
-    if (after.length) {
-      bad(`${after.length} active line(s) run AFTER the hook — this can break it:`);
-      after.slice(0, 5).forEach((l) => info(`    ${l.trim().slice(0, 70)}`));
-    } else ok("nothing active runs after it");
+    // Position is a performance property, not a correctness one: the hook execs
+    // the wrapper and never returns, so whatever sits below it never runs in the
+    // outer shell. What it costs is the lines ABOVE it, which the outer shell
+    // evaluates in full and the wrapped shell then evaluates all over again.
+    const before = lines.slice(0, idx).filter((l) => l.trim() && !l.trimStart().startsWith("#"));
+    if (before.length > 5) {
+      info(`${before.length} active line(s) run BEFORE the hook, so they are evaluated twice per terminal`);
+      info(`    move the block to the top of ${rc} — run: npm run shell-init`);
+    } else ok("nothing meaningful runs before it");
   }
 }
 
