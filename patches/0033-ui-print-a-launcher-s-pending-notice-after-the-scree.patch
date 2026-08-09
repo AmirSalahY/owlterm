@@ -1,0 +1,86 @@
+From 6fe0a2fe793ae135dd845fc9ea1074e1061c091c Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Sun, 9 Aug 2026 17:48:46 +0300
+Subject: [PATCH 33/33] ui: print a launcher's pending notice after the screen
+ clear
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+An embedding launcher that wants to say something at startup — ours announces
+new releases — has nowhere safe to say it. Writing to the terminal before
+exec-ing us looks right and isn't: render() opens with clearTerminal, whose
+trailing 3J erases the scrollback along with the screen, so the message is
+destroyed rather than scrolled away.
+
+Timed on a real out-of-date install: the check finishes in ~45ms when its
+answer is cached and the clear lands ~190ms in, so the notice lost that race on
+every start where the cache was warm — which, with a six-hour TTL, is nearly
+all of them. It only ever survived when GitHub happened to take longer than
+200ms to answer, which is why this looked intermittent instead of broken.
+
+So take the message through a file the launcher names in OWLTERM_PENDING_NOTICE
+and drain it here, immediately after the clear. A check that finishes late
+leaves its notice for the next session rather than losing it. Unlinking before
+printing means a crash mid-write costs one notice instead of pinning it there
+forever, and stock builds set no such variable and do nothing.
+---
+ src/ui/ui-root.ts | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/src/ui/ui-root.ts b/src/ui/ui-root.ts
+index 32d7119..15268ab 100644
+--- a/src/ui/ui-root.ts
++++ b/src/ui/ui-root.ts
+@@ -1,6 +1,8 @@
+ // Copyright (c) Microsoft Corporation.
+ // Licensed under the MIT License.
+ 
++import fs from "node:fs";
++
+ import ansi from "ansi-escapes";
+ import { Command } from "commander";
+ 
+@@ -20,6 +22,31 @@ const writeOutput = (data: string) => {
+   process.stdout.write(data);
+ };
+ 
++/**
++ * Print anything an embedding launcher left for us, then remove it.
++ *
++ * Must be called *after* the startup clearTerminal. That sequence ends in `3J`,
++ * which erases the scrollback as well as the screen, so a launcher that prints
++ * to the terminal before exec-ing us has its message destroyed rather than
++ * scrolled away. Handing it over in a file is the only ordering that survives.
++ *
++ * Unset in a stock build, where there is no launcher and nothing to drain.
++ */
++const drainPendingNotice = () => {
++  const noticePath = process.env.OWLTERM_PENDING_NOTICE;
++  if (!noticePath) return;
++  try {
++    const notice = fs.readFileSync(noticePath, "utf8");
++    // Unlink before writing: a notice shown twice is worse than one shown late,
++    // and if the write throws we still don't want it pinned here forever.
++    fs.unlinkSync(noticePath);
++    // stdin is in raw mode by now, so bare newlines would stair-step.
++    writeOutput(notice.replace(/\r?\n/g, "\r\n"));
++  } catch {
++    // Nothing pending, or it vanished under us. Never hold up the session.
++  }
++};
++
+ export const render = async (program: Command, shell: Shell, underTest: boolean, login: boolean) => {
+   const [isterm, { SuggestionManager }] = await Promise.all([import("../isterm/index.js"), import("./suggestionManager.js")]);
+   const term = await isterm.default.spawn(program, { shell, rows: process.stdout.rows, cols: process.stdout.columns, underTest, login });
+@@ -40,6 +67,7 @@ export const render = async (program: Command, shell: Shell, underTest: boolean,
+   const handleInput = (data: Buffer | string) => stdio.handleInput(data);
+   process.stdin.on("data", handleInput);
+   writeOutput(ansi.clearTerminal);
++  drainPendingNotice();
+ 
+   const suggestionScheduler = new BatchScheduler(
+     async () => {
+-- 
+2.51.0
+

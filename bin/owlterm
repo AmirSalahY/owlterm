@@ -94,10 +94,20 @@ for arg in "$@"; do
       ;;
   esac
 done
+# Where the background check leaves a notice for the session to print. Exported
+# unconditionally, not just when a check runs: a check that finished too late to
+# be shown last time has its notice waiting here, and this is what gets it read.
+export OWLTERM_PENDING_NOTICE="${HOME:-/tmp}/.owlterm/pending-notice.txt"
+
 if [[ "$should_check_updates" == true && -t 2 && "${OWLTERM_UPDATE_CHECK:-1}" != "0" && -f "$UPDATE_CHECK" ]]; then
   # Do not make a new terminal wait on GitHub or DNS. The helper has its own
   # timeout and cache; run it beside startup so a cold check cannot block prompt.
-  (OWLTERM_UPDATE_OUTPUT=/dev/tty node "$UPDATE_CHECK" "$ROOT" </dev/null >/dev/null 2>/dev/null || true) &
+  #
+  # It writes to a file rather than /dev/tty because the session clears the
+  # screen *and the scrollback* as it starts. On a cache hit this check finishes
+  # in ~45ms and that clear lands ~190ms in, so a notice sent straight to the
+  # terminal was reliably destroyed — which is why nobody was seeing these.
+  (OWLTERM_UPDATE_OUTPUT="$OWLTERM_PENDING_NOTICE" node "$UPDATE_CHECK" "$ROOT" </dev/null >/dev/null 2>/dev/null || true) &
 fi
 
 if [[ "$should_check_updates" == true ]]; then

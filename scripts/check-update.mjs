@@ -66,7 +66,22 @@ const writeNotice = (message) => {
   const output = process.env.OWLTERM_UPDATE_OUTPUT;
   if (output) {
     try {
-      fs.writeFileSync(output, message, { flag: "a" });
+      // A device gets the message directly; there is nothing to be atomic about
+      // and renaming onto /dev/tty would not do what it looks like it does.
+      if (output.startsWith("/dev/")) {
+        fs.writeFileSync(output, message, { flag: "a" });
+        return;
+      }
+      // Otherwise this is the hand-off file the session drains after it clears
+      // the screen. The reader unlinks it, and both sides run concurrently, so
+      // publish it with a rename: the file either isn't there or is complete,
+      // never half-written. Overwrite rather than append — one pending notice
+      // is the whole point, and appending would stack duplicates across the
+      // starts that happen before the reader gets to it.
+      fs.mkdirSync(path.dirname(output), { recursive: true });
+      const staging = `${output}.${process.pid}.tmp`;
+      fs.writeFileSync(staging, message);
+      fs.renameSync(staging, output);
       return;
     } catch {
       return;
