@@ -1,7 +1,7 @@
 From 17c01dae6af40a70ca7ff9afec0f7096a2bc9186 Mon Sep 17 00:00:00 2001
 From: Amir <hello@noury.ch>
 Date: Sat, 1 Aug 2026 18:22:31 +0300
-Subject: [PATCH 04/34] fix(ui): make Esc actually dismiss, and style the menu
+Subject: [PATCH 04/35] fix(ui): make Esc actually dismiss, and style the menu
  like a macOS menu
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

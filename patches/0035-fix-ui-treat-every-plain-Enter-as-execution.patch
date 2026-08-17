@@ -1,0 +1,140 @@
+From a083c71f092776ecc0f2acb90349b570c42c45a4 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Mon, 17 Aug 2026 18:15:53 +0300
+Subject: [PATCH 35/35] fix(ui): treat every plain Enter as execution
+
+---
+ src/tests/keys.test.ts      | 32 ++++++++++++++++++++++++++++++++
+ src/ui/suggestionManager.ts | 31 +++++++++++++++++++++++--------
+ 2 files changed, 55 insertions(+), 8 deletions(-)
+
+diff --git a/src/tests/keys.test.ts b/src/tests/keys.test.ts
+index fb84092..3d36e05 100644
+--- a/src/tests/keys.test.ts
++++ b/src/tests/keys.test.ts
+@@ -51,6 +51,14 @@ const press = (name: string, mods: { meta?: boolean; ctrl?: boolean; shift?: boo
+   meta: !!mods.meta,
+ });
+ 
++const pressSequence = (name: string, sequence: string, mods: { meta?: boolean; ctrl?: boolean; shift?: boolean } = {}) => ({
++  name,
++  sequence,
++  ctrl: !!mods.ctrl,
++  shift: !!mods.shift,
++  meta: !!mods.meta,
++});
++
+ const BACKSPACE = "";
+ 
+ beforeEach(() => resetSizeOverride());
+@@ -255,6 +263,30 @@ describe("Enter submits", () => {
+     expect(term.written).toEqual(["<clear>"]);
+   });
+ 
++  it("falls through when readline reports LF as enter", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("status")]);
++
++    expect(m.update(pressSequence("enter", "\n"))).toBe(false);
++    expect(term.written).toEqual(["<clear>"]);
++  });
++
++  it("falls through for keypad Enter sequences", async () => {
++    const term = makeTerm("git ");
++    const m = await makeManager(term, [suggestion("status")]);
++
++    expect(m.update(pressSequence("undefined", "\x1bOM"))).toBe(false);
++    expect(term.written).toEqual(["<clear>"]);
++  });
++
++  it("falls through when the cursor is mid-token and bindings are disabled", async () => {
++    const term = makeTerm("git che", false);
++    const m = await makeManager(term, [suggestion("checkout")], "che");
++
++    expect(m.update(enter, false)).toBe(false);
++    expect(term.written).toEqual(["<clear>"]);
++  });
++
+   it("ignores legacy config that asks Enter to accept", async () => {
+     const original = getConfig().keys.enter;
+     getConfig().keys.enter = "insert";
+diff --git a/src/ui/suggestionManager.ts b/src/ui/suggestionManager.ts
+index e1374a5..01e033f 100644
+--- a/src/ui/suggestionManager.ts
++++ b/src/ui/suggestionManager.ts
+@@ -62,6 +62,18 @@ type KeyPress = {
+   meta?: boolean;
+ };
+ 
++const isPlainEnter = (press: KeyPress): boolean => {
++  if (press.ctrl || press.shift || press.meta) return false;
++  return (
++    press.name === "return" ||
++    press.name === "enter" ||
++    press.sequence === "\r" ||
++    press.sequence === "\n" ||
++    press.sequence === "\r\n" ||
++    press.sequence === "\x1bOM"
++  );
++};
++
+ /**
+  * True when a keypress matches a configured binding, modifiers included.
+  *
+@@ -389,7 +401,7 @@ export class SuggestionManager {
+ 
+     // Enter is never borrowed: it always runs the line, even if a user rc file
+     // still binds the old accept action to Return.
+-    if (press.name === "return") return undefined;
++    if (isPlainEnter(press)) return undefined;
+     if (matches(press, config.bindings.acceptSuggestion)) return keys.tab;
+     // Right is not rebindable — it is the *shell's* key that we optionally
+     // borrow.
+@@ -461,6 +473,14 @@ export class SuggestionManager {
+   update(keyPress: KeyPress, allowBindings = true): boolean {
+     const { name, shift, ctrl } = keyPress;
+ 
++    if (isPlainEnter(keyPress)) {
++      this.#dismissed = false;
++      this.#hideSuggestions = false;
++      this.#suggestBlob = undefined;
++      this.#term.clearCommand();
++      return false;
++    }
++
+     // Resolved up front because accept keys must NOT clear the command, or they
+     // would wipe the very line the acceptance is about to edit. Enter is excluded
+     // from #acceptMode, so it clears our command tracker and falls through to the
+@@ -483,11 +503,6 @@ export class SuggestionManager {
+     // below and wipe the very line it is about to complete.
+     const pendingExecute = allowBindings && matches(keyPress, getConfig().bindings.executeSelected) ? this.#pendingAcceptance() : undefined;
+ 
+-    const shouldClearOnEnter = name == "return" && acceptance == null && pendingExecute == null;
+-    if (shouldClearOnEnter) {
+-      this.#term.clearCommand(); // clear the current command on enter
+-    }
+-
+     // An explicit dismissal lasts for the rest of the line. Enter starts a fresh
+     // line, and Tab is the conventional "complete this" request, so both lift it.
+     // Tab is also swallowed here so it doesn't fall through to the shell's own
+@@ -498,7 +513,7 @@ export class SuggestionManager {
+     let reopened = false;
+     if (this.#dismissed) {
+       const accept = getConfig().bindings.acceptSuggestion;
+-      if (name == "return") {
++      if (isPlainEnter(keyPress)) {
+         this.#dismissed = false;
+       } else if (name == accept.key && shift == !!accept.shift && ctrl == !!accept.control) {
+         this.#dismissed = false;
+@@ -563,7 +578,7 @@ export class SuggestionManager {
+       // shell, so Enter still submits and right arrow still moves the cursor.
+       if (acceptedName) this.#recordAccepted(acceptedName);
+       this.#term.write(applyReplacement(acceptance));
+-    } else if (name == "return") {
++    } else if (isPlainEnter(keyPress)) {
+       return false;
+     } else if (name == "c" && ctrl) {
+       this.#term.clearCommand();
+-- 
+2.50.1 (Apple Git-155)
+

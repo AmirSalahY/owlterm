@@ -1,7 +1,7 @@
 From 92fda0a3d2c3ca295612d8b804104840b66e5250 Mon Sep 17 00:00:00 2001
 From: AmirSalahY <hello@noury.ch>
 Date: Sun, 2 Aug 2026 12:39:43 +0300
-Subject: [PATCH 07/34] feat(ui): use Codicons rather than FontAwesome for the
+Subject: [PATCH 07/35] feat(ui): use Codicons rather than FontAwesome for the
  icon column
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
