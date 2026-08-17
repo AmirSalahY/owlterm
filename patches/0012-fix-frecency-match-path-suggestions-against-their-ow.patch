@@ -1,7 +1,7 @@
 From 2db8c33f30f7332c94012ec03fe9b0b7ec62680f Mon Sep 17 00:00:00 2001
 From: AmirSalahY <hello@noury.ch>
 Date: Sun, 2 Aug 2026 16:40:54 +0300
-Subject: [PATCH 12/33] fix(frecency): match path suggestions against their own
+Subject: [PATCH 12/34] fix(frecency): match path suggestions against their own
  history
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -181,5 +181,5 @@ zcmbOqvdVA60rt(?xk5QNH%p2!Ze|tfWM+xh)6<(gS5cfRRxc|*GfzWFL22_^@$-zE
 fXG-xgZQd($g9WRSEsDFb>+MrLf>mO2q2@XO<De++
 
 -- 
-2.51.0
+2.50.1 (Apple Git-155)
 

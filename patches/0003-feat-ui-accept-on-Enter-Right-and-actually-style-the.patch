@@ -1,7 +1,7 @@
 From 2710120c848fab519122b16bc9a04e497bece770 Mon Sep 17 00:00:00 2001
 From: Amir <hello@noury.ch>
 Date: Sat, 1 Aug 2026 17:48:49 +0300
-Subject: [PATCH 03/33] feat(ui): accept on Enter/Right, and actually style the
+Subject: [PATCH 03/34] feat(ui): accept on Enter/Right, and actually style the
  dropdown
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -333,5 +333,5 @@ delta 29
 kcmaEB(r&up8<T)ST2X$kf>K_7N~%>_v6A)XH%yJ<0IcW=`v3p{
 
 -- 
-2.51.0
+2.50.1 (Apple Git-155)
 
