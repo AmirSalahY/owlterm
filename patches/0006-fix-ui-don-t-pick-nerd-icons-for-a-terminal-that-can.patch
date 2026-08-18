@@ -1,7 +1,7 @@
 From 9a1aca7bc09af752951b4803743966cc3f559ad9 Mon Sep 17 00:00:00 2001
 From: AmirSalahY <hello@noury.ch>
 Date: Sun, 2 Aug 2026 12:30:58 +0300
-Subject: [PATCH 06/36] fix(ui): don't pick nerd icons for a terminal that
+Subject: [PATCH 06/37] fix(ui): don't pick nerd icons for a terminal that
  can't render them
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

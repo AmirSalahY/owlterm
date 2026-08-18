@@ -1,0 +1,134 @@
+From d0a376c1791a99abe078c9a57cd43b24bb4521fe Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Tue, 18 Aug 2026 14:20:24 +0300
+Subject: [PATCH 37/37] git: include fetched remote branches in checkout
+ suggestions
+
+---
+ src/runtime/gitRefs.ts                     | 12 +++++--
+ src/tests/runtime/commandLineColor.test.ts | 29 +++++++++++++++++
+ src/tests/runtime/runtime.test.ts          | 38 ++++++++++++++++++++++
+ 3 files changed, 77 insertions(+), 2 deletions(-)
+
+diff --git a/src/runtime/gitRefs.ts b/src/runtime/gitRefs.ts
+index 28117e0..191799a 100644
+--- a/src/runtime/gitRefs.ts
++++ b/src/runtime/gitRefs.ts
+@@ -44,6 +44,14 @@ const loadRefs = (cwd: string, localOnly: boolean): Set<string> => {
+   return refs;
+ };
+ 
+-export const localGitBranches = (cwd: string): string[] => [...loadRefs(cwd, true)].sort((a, b) => a.localeCompare(b));
++export const localGitBranches = (cwd: string): string[] => {
++  const branches = new Set(loadRefs(cwd, true));
++  for (const ref of loadRefs(cwd, false)) {
++    if (branches.has(ref)) continue;
++    const slash = ref.indexOf("/");
++    if (slash > 0) branches.add(ref.slice(slash + 1));
++  }
++  return [...branches].sort((a, b) => a.localeCompare(b));
++};
+ 
+-export const isGitRef = (cwd: string, token: string): boolean => loadRefs(cwd, false).has(token);
++export const isGitRef = (cwd: string, token: string): boolean => localGitBranches(cwd).includes(token) || loadRefs(cwd, false).has(token);
+diff --git a/src/tests/runtime/commandLineColor.test.ts b/src/tests/runtime/commandLineColor.test.ts
+index 1d96e43..e390282 100644
+--- a/src/tests/runtime/commandLineColor.test.ts
++++ b/src/tests/runtime/commandLineColor.test.ts
+@@ -17,6 +17,26 @@ const makeGitRepo = (): string => {
+   return dir;
+ };
+ 
++const makeGitRepoWithRemoteBranch = (): { root: string; cwd: string } => {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inshellisense-git-remote-"));
++  const upstream = path.join(root, "upstream");
++  const remote = path.join(root, "remote.git");
++  const cwd = path.join(root, "client");
++
++  fs.mkdirSync(upstream);
++  childProcess.execFileSync("git", ["init", "-b", "main"], { cwd: upstream, stdio: "ignore" });
++  childProcess.execFileSync("git", ["config", "user.email", "test@example.test"], { cwd: upstream, stdio: "ignore" });
++  childProcess.execFileSync("git", ["config", "user.name", "Test User"], { cwd: upstream, stdio: "ignore" });
++  childProcess.execFileSync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: upstream, stdio: "ignore" });
++  childProcess.execFileSync("git", ["checkout", "-b", "feature/fetched-only"], { cwd: upstream, stdio: "ignore" });
++  childProcess.execFileSync("git", ["commit", "--allow-empty", "-m", "remote branch"], { cwd: upstream, stdio: "ignore" });
++  childProcess.execFileSync("git", ["checkout", "main"], { cwd: upstream, stdio: "ignore" });
++  childProcess.execFileSync("git", ["clone", "--bare", upstream, remote], { cwd: root, stdio: "ignore" });
++  childProcess.execFileSync("git", ["clone", remote, cwd], { cwd: root, stdio: "ignore" });
++
++  return { root, cwd };
++};
++
+ const typeAtWord = (command: string, word: string, cwd?: string) => {
+   const offset = command.indexOf(word);
+   return commandLineColorTypeAt(commandLineColorSpans(command, cwd), offset);
+@@ -54,3 +74,12 @@ test("classifies git ref arguments as branches", () => {
+     fs.rmSync(cwd, { recursive: true, force: true });
+   }
+ });
++
++test("classifies fetched remote-only branch names as branches", () => {
++  const repo = makeGitRepoWithRemoteBranch();
++  try {
++    expect(typeAtWord("git checkout feature/fetched-only", "feature/fetched-only", repo.cwd)).toBe("branch");
++  } finally {
++    fs.rmSync(repo.root, { recursive: true, force: true });
++  }
++});
+diff --git a/src/tests/runtime/runtime.test.ts b/src/tests/runtime/runtime.test.ts
+index 37457bb..652b377 100644
+--- a/src/tests/runtime/runtime.test.ts
++++ b/src/tests/runtime/runtime.test.ts
+@@ -49,6 +49,26 @@ const makeGitRepo = (): string => {
+   return dir;
+ };
+ 
++const makeGitRepoWithRemoteBranch = (): { root: string; cwd: string } => {
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inshellisense-git-remote-"));
++  const upstream = path.join(root, "upstream");
++  const remote = path.join(root, "remote.git");
++  const cwd = path.join(root, "client");
++
++  fs.mkdirSync(upstream);
++  childProcess.execFileSync("git", ["init", "-b", "main"], { cwd: upstream, stdio: "ignore" });
++  childProcess.execFileSync("git", ["config", "user.email", "test@example.test"], { cwd: upstream, stdio: "ignore" });
++  childProcess.execFileSync("git", ["config", "user.name", "Test User"], { cwd: upstream, stdio: "ignore" });
++  childProcess.execFileSync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: upstream, stdio: "ignore" });
++  childProcess.execFileSync("git", ["checkout", "-b", "feature/fetched-only"], { cwd: upstream, stdio: "ignore" });
++  childProcess.execFileSync("git", ["commit", "--allow-empty", "-m", "remote branch"], { cwd: upstream, stdio: "ignore" });
++  childProcess.execFileSync("git", ["checkout", "main"], { cwd: upstream, stdio: "ignore" });
++  childProcess.execFileSync("git", ["clone", "--bare", upstream, remote], { cwd: root, stdio: "ignore" });
++  childProcess.execFileSync("git", ["clone", remote, cwd], { cwd: root, stdio: "ignore" });
++
++  return { root, cwd };
++};
++
+ describe(`parseCommand`, () => {
+   testData.forEach(({ command, name, skip, maxSuggestions }) => {
+     if (skip) return;
+@@ -163,4 +183,22 @@ describe(`getCommandSuggestions`, () => {
+       fs.rmSync(cwd, { recursive: true, force: true });
+     }
+   });
++
++  test("suggests fetched remote-only branches from command position", async () => {
++    const repo = makeGitRepoWithRemoteBranch();
++    try {
++      const suggestions = await getSuggestions("fetched", repo.cwd, Shell.Bash);
++      expect(suggestions?.suggestions).toEqual(
++        expect.arrayContaining([
++          expect.objectContaining({
++            name: "feature/fetched-only",
++            type: "branch",
++            insertValue: "git checkout feature/fetched-only ",
++          }),
++        ]),
++      );
++    } finally {
++      fs.rmSync(repo.root, { recursive: true, force: true });
++    }
++  });
+ });
+-- 
+2.51.0
+
