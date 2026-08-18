@@ -1,0 +1,470 @@
+From 9cfd6326b60276c6256726e976b827ddad3c4001 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Tue, 18 Aug 2026 10:31:48 +0300
+Subject: [PATCH 36/36] git: suggest branch checkouts from command position
+
+---
+ src/runtime/commandLineColor.ts            | 25 ++++++++++-
+ src/runtime/gitRefs.ts                     | 49 ++++++++++++++++++++++
+ src/runtime/icons.ts                       | 12 ++++--
+ src/runtime/model.ts                       |  4 +-
+ src/runtime/runtime.ts                     | 19 ++++++++-
+ src/runtime/suggestion.ts                  |  4 +-
+ src/tests/colors.test.ts                   |  6 +--
+ src/tests/runtime/commandLineColor.test.ts | 28 ++++++++++++-
+ src/tests/runtime/icons.test.ts            |  2 +-
+ src/tests/runtime/runtime.test.ts          | 49 ++++++++++++++++++++++
+ src/utils/config.ts                        |  3 ++
+ 11 files changed, 185 insertions(+), 16 deletions(-)
+ create mode 100644 src/runtime/gitRefs.ts
+
+diff --git a/src/runtime/commandLineColor.ts b/src/runtime/commandLineColor.ts
+index 84c5642..50eff63 100644
+--- a/src/runtime/commandLineColor.ts
++++ b/src/runtime/commandLineColor.ts
+@@ -5,8 +5,10 @@ import { isShellDefinedCommand } from "./alias.js";
+ import { wcswidth } from "../utils/unicode.js";
+ import fs from "node:fs";
+ import path from "node:path";
++import { isGitRef } from "./gitRefs.js";
++import type { SuggestionType } from "./model.js";
+ 
+-export type CommandLineColorType = Fig.SuggestionType | "invalidCommand";
++export type CommandLineColorType = SuggestionType | "invalidCommand";
+ 
+ export type CommandLineColorSpan = {
+   start: number;
+@@ -96,9 +98,18 @@ const commandExists = (command: string, cwd: string): boolean => {
+   return exists;
+ };
+ 
++const gitRefSubcommands = new Set(["branch", "checkout", "diff", "merge", "rebase", "restore", "show", "switch"]);
++
++const isGitRefPosition = (tokens: string[], token: string, cwd: string): boolean => {
++  if (tokens[0] !== "git" || !gitRefSubcommands.has(tokens[1] ?? "")) return false;
++  if (token.startsWith("-")) return false;
++  return isGitRef(cwd, token);
++};
++
+ export const commandLineColorSpans = (commandText: string, cwd = process.cwd()): CommandLineColorSpan[] => {
+   const spans: CommandLineColorSpan[] = [];
+   let expectingCommand = true;
++  let commandTokens: string[] = [];
+ 
+   for (const match of commandText.matchAll(/\S+/g)) {
+     const raw = match[0];
+@@ -108,6 +119,7 @@ export const commandLineColorSpans = (commandText: string, cwd = process.cwd()):
+     if (operator.test(raw)) {
+       spans.push({ start, end, type: "special" });
+       expectingCommand = true;
++      commandTokens = [];
+       continue;
+     }
+ 
+@@ -116,8 +128,17 @@ export const commandLineColorSpans = (commandText: string, cwd = process.cwd()):
+       continue;
+     }
+ 
+-    const type: CommandLineColorType = expectingCommand ? (commandExists(raw, cwd) ? "subcommand" : "invalidCommand") : raw.startsWith("-") ? "option" : "arg";
++    const type: CommandLineColorType = expectingCommand
++      ? commandExists(raw, cwd)
++        ? "subcommand"
++        : "invalidCommand"
++      : raw.startsWith("-")
++      ? "option"
++      : isGitRefPosition([...commandTokens, raw], raw, cwd)
++      ? "branch"
++      : "arg";
+     spans.push({ start, end, type });
++    commandTokens.push(raw);
+     expectingCommand = false;
+   }
+ 
+diff --git a/src/runtime/gitRefs.ts b/src/runtime/gitRefs.ts
+new file mode 100644
+index 0000000..28117e0
+--- /dev/null
++++ b/src/runtime/gitRefs.ts
+@@ -0,0 +1,49 @@
++// Copyright (c) Microsoft Corporation.
++// Licensed under the MIT License.
++
++import childProcess from "node:child_process";
++
++type RefCacheEntry = {
++  loadedAt: number;
++  refs: Set<string>;
++};
++
++const cache = new Map<string, RefCacheEntry>();
++const cacheTtlMs = 5000;
++
++const git = (cwd: string, args: string[]): string | undefined => {
++  try {
++    return childProcess.execFileSync("git", ["-C", cwd, ...args], {
++      encoding: "utf8",
++      stdio: ["ignore", "pipe", "ignore"],
++    });
++  } catch {
++    return undefined;
++  }
++};
++
++const gitRoot = (cwd: string): string | undefined => git(cwd, ["rev-parse", "--show-toplevel"])?.trim() || undefined;
++
++const loadRefs = (cwd: string, localOnly: boolean): Set<string> => {
++  const root = gitRoot(cwd);
++  if (root == null) return new Set();
++
++  const key = `${root}\u0000${localOnly ? "local" : "all"}`;
++  const cached = cache.get(key);
++  if (cached != null && Date.now() - cached.loadedAt < cacheTtlMs) return cached.refs;
++
++  const namespaces = localOnly ? ["refs/heads"] : ["refs/heads", "refs/remotes"];
++  const output = git(root, ["for-each-ref", "--format=%(refname:short)", ...namespaces]) ?? "";
++  const refs = new Set(
++    output
++      .split(/\r?\n/)
++      .map((ref) => ref.trim())
++      .filter((ref) => ref.length > 0 && !ref.endsWith("/HEAD")),
++  );
++  cache.set(key, { loadedAt: Date.now(), refs });
++  return refs;
++};
++
++export const localGitBranches = (cwd: string): string[] => [...loadRefs(cwd, true)].sort((a, b) => a.localeCompare(b));
++
++export const isGitRef = (cwd: string, token: string): boolean => loadRefs(cwd, false).has(token);
+diff --git a/src/runtime/icons.ts b/src/runtime/icons.ts
+index f6fb3b8..9ef5ca7 100644
+--- a/src/runtime/icons.ts
++++ b/src/runtime/icons.ts
+@@ -8,8 +8,9 @@
+ 
+ import { getConfig, type IconStyle } from "../utils/config.js";
+ import { hasNerdFont } from "../utils/nerdfont.js";
++import type { SuggestionType } from "./model.js";
+ 
+-type IconKey = "File" | "Folder" | "Subcommand" | "Option" | "Argument" | "Mixin" | "Shortcut" | "Special" | "Default";
++type IconKey = "File" | "Folder" | "Subcommand" | "Option" | "Argument" | "Mixin" | "Shortcut" | "Special" | "Branch" | "Default";
+ type IconSet = Record<IconKey, string>;
+ 
+ /**
+@@ -35,6 +36,7 @@ const codiconIcons: IconSet = {
+   Mixin: "\ueb15", // cod-link — a mixin pulls in another spec
+   Shortcut: "\uea86", // cod-zap
+   Special: "\ueb59", // cod-star-full
++  Branch: "\uea68", // cod-git-branch
+   Default: "\uea71", // cod-circle-filled
+ };
+ 
+@@ -57,6 +59,7 @@ const unicodeIcons: IconSet = {
+   Option: "·",
+   Argument: "◇",
+   Mixin: "§",
++  Branch: "⑂",
+   // ↯ rather than the more obvious ⚡, which is double-width and would be the one
+   // glyph in the set that pushes its label a cell out of line.
+   Shortcut: "↯",
+@@ -74,10 +77,11 @@ const emojiIcons: IconSet = {
+   Mixin: "🏝️",
+   Shortcut: "🔥",
+   Special: "⭐",
++  Branch: "⑂",
+   Default: "📀",
+ };
+ 
+-const noIcons: IconSet = { File: "", Folder: "", Subcommand: "", Option: "", Argument: "", Mixin: "", Shortcut: "", Special: "", Default: "" };
++const noIcons: IconSet = { File: "", Folder: "", Subcommand: "", Option: "", Argument: "", Mixin: "", Shortcut: "", Special: "", Branch: "", Default: "" };
+ 
+ const ICON_STYLES = ["codicon", "unicode", "emoji", "none"] as const;
+ 
+@@ -155,7 +159,7 @@ export const NerdFontIcons = {
+   yarn: "\ue8ec",
+ };
+ 
+-export const getIcon = (icon: string | undefined, suggestionType: Fig.SuggestionType | undefined): string => {
++export const getIcon = (icon: string | undefined, suggestionType: SuggestionType | undefined): string => {
+   const style = resolveIconStyle();
+   if (style === "none") return "";
+ 
+@@ -192,6 +196,8 @@ export const getIcon = (icon: string | undefined, suggestionType: Fig.Suggestion
+       return SuggestionIcons.Shortcut;
+     case "special":
+       return SuggestionIcons.Special;
++    case "branch":
++      return SuggestionIcons.Branch;
+   }
+   return SuggestionIcons.Default;
+ };
+diff --git a/src/runtime/model.ts b/src/runtime/model.ts
+index ab3648c..95a461a 100644
+--- a/src/runtime/model.ts
++++ b/src/runtime/model.ts
+@@ -3,6 +3,8 @@
+ 
+ import { CommandToken } from "./parser.js";
+ 
++export type SuggestionType = Fig.SuggestionType | "branch";
++
+ export type Suggestion = {
+   name: string;
+   allNames: string[];
+@@ -10,7 +12,7 @@ export type Suggestion = {
+   icon: string;
+   priority: number;
+   insertValue?: string;
+-  type?: Fig.SuggestionType;
++  type?: SuggestionType;
+   hidden?: boolean;
+ };
+ 
+diff --git a/src/runtime/runtime.ts b/src/runtime/runtime.ts
+index 5b6aa52..a5dbe60 100644
+--- a/src/runtime/runtime.ts
++++ b/src/runtime/runtime.ts
+@@ -24,6 +24,7 @@ import log from "../utils/log.js";
+ import { specResourcesPath } from "../utils/constants.js";
+ import { endTiming, startTiming } from "../utils/performance.js";
+ import { clearImplicitGeneratorState } from "./generatorCache.js";
++import { localGitBranches } from "./gitRefs.js";
+ 
+ // eslint-disable-next-line @typescript-eslint/no-explicit-any -- recursive type, setting as any
+ const specSet: any = {};
+@@ -117,7 +118,7 @@ export const getSuggestions = async (cmd: string, cwd: string, shell: Shell, sig
+       return;
+     }
+     if (rootToken != null && !rootToken.complete) {
+-      return runCommand(rootToken);
++      return runCommand(rootToken, cwd);
+     }
+ 
+     activeCmd = aliasExpand(activeCmd);
+@@ -439,11 +440,25 @@ const runSubcommand = async (
+   return runSubcommand(tokens.slice(1), allTokens, subcommand, cwd, shell, persistentOptions, acceptedTokens.concat(activeToken), undefined, undefined, signal);
+ };
+ 
+-const runCommand = async (token: CommandToken): Promise<SuggestionBlob | undefined> => {
++const runCommand = async (token: CommandToken, cwd = process.cwd()): Promise<SuggestionBlob | undefined> => {
+   const specs = prefixMatches(specNames, token.token);
+   const aliases = prefixMatches(getAliasNames(), token.token);
++  const branchQuery = token.token.toLowerCase();
++  const branches = token.token.length >= 2 ? localGitBranches(cwd).filter((branch) => branch.toLowerCase().includes(branchQuery)) : [];
+   return {
+     suggestions: [
++      ...branches.map(
++        (branch) =>
++          ({
++            name: branch,
++            description: `git checkout ${branch}`,
++            type: "branch",
++            allNames: [branch],
++            icon: SuggestionIcons.Branch,
++            insertValue: `git checkout ${branch} `,
++            priority: 90,
++          }) as Suggestion,
++      ),
+       ...aliases.map(
+         (alias) =>
+           ({
+diff --git a/src/runtime/suggestion.ts b/src/runtime/suggestion.ts
+index c8d9206..ea84102 100644
+--- a/src/runtime/suggestion.ts
++++ b/src/runtime/suggestion.ts
+@@ -7,7 +7,7 @@ import { CommandToken } from "./parser.js";
+ import { getGeneratorSuggestions } from "./generatorCache.js";
+ import { getGeneratorQueryTerm } from "./generator.js";
+ import { runTemplates } from "./template.js";
+-import { Suggestion, SuggestionBlob } from "./model.js";
++import { Suggestion, SuggestionBlob, type SuggestionType } from "./model.js";
+ import log from "../utils/log.js";
+ import { escapePath } from "./utils.js";
+ import { addPathSeparator, endsWithPathSeparator, getPathDirname, removePathSeparator, Shell } from "../utils/shell.js";
+@@ -21,7 +21,7 @@ const getLong = (suggestion: Fig.SingleOrArray<string>): string => {
+   return suggestion instanceof Array ? suggestion.reduce((p, c) => (p.length > c.length ? p : c)) : suggestion;
+ };
+ 
+-const getPathy = (type: Fig.SuggestionType | undefined): boolean => {
++const getPathy = (type: SuggestionType | undefined): boolean => {
+   return type === "file" || type === "folder";
+ };
+ 
+diff --git a/src/tests/colors.test.ts b/src/tests/colors.test.ts
+index 7064390..b9ca735 100644
+--- a/src/tests/colors.test.ts
++++ b/src/tests/colors.test.ts
+@@ -146,9 +146,9 @@ describe("theme.types config", () => {
+   // cleanly and colouring nothing — a config that looks applied but isn't.
+   // loadConfig reads fixed paths under the real home directory and can't be
+   // pointed elsewhere, so the schema itself isn't reachable from here; what is
+-  // checkable is that the defaults cover exactly Fig's type union, which is what
+-  // the schema is written against.
++  // checkable is that the defaults cover the known suggestion types, which is
++  // what the schema is written against.
+   it("covers exactly the Fig suggestion types", () => {
+-    expect(Object.keys(getConfig().theme.types).sort()).toEqual(["arg", "file", "folder", "mixin", "option", "shortcut", "special", "subcommand"]);
++    expect(Object.keys(getConfig().theme.types).sort()).toEqual(["arg", "branch", "file", "folder", "mixin", "option", "shortcut", "special", "subcommand"]);
+   });
+ });
+diff --git a/src/tests/runtime/commandLineColor.test.ts b/src/tests/runtime/commandLineColor.test.ts
+index 2ccde37..1d96e43 100644
+--- a/src/tests/runtime/commandLineColor.test.ts
++++ b/src/tests/runtime/commandLineColor.test.ts
+@@ -1,11 +1,25 @@
+ // Copyright (c) Microsoft Corporation.
+ // Licensed under the MIT License.
+ 
++import childProcess from "node:child_process";
++import fs from "node:fs";
++import os from "node:os";
++import path from "node:path";
++
+ import { commandLineColorSpans, commandLineColorTypeAt } from "../../runtime/commandLineColor.js";
+ 
+-const typeAtWord = (command: string, word: string) => {
++const makeGitRepo = (): string => {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "inshellisense-git-"));
++  childProcess.execFileSync("git", ["init", "-b", "main"], { cwd: dir, stdio: "ignore" });
++  childProcess.execFileSync("git", ["config", "user.email", "test@example.test"], { cwd: dir, stdio: "ignore" });
++  childProcess.execFileSync("git", ["config", "user.name", "Test User"], { cwd: dir, stdio: "ignore" });
++  childProcess.execFileSync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: dir, stdio: "ignore" });
++  return dir;
++};
++
++const typeAtWord = (command: string, word: string, cwd?: string) => {
+   const offset = command.indexOf(word);
+-  return commandLineColorTypeAt(commandLineColorSpans(command), offset);
++  return commandLineColorTypeAt(commandLineColorSpans(command, cwd), offset);
+ };
+ 
+ test("classifies command words by shell role", () => {
+@@ -30,3 +44,13 @@ test("starts a new command after shell operators", () => {
+   expect(typeAtWord(command, "&&")).toBe("special");
+   expect(typeAtWord(command, "npm")).toBe("subcommand");
+ });
++
++test("classifies git ref arguments as branches", () => {
++  const cwd = makeGitRepo();
++  try {
++    expect(typeAtWord("git checkout main", "main", cwd)).toBe("branch");
++    expect(typeAtWord("git checkout missing", "missing", cwd)).toBe("arg");
++  } finally {
++    fs.rmSync(cwd, { recursive: true, force: true });
++  }
++});
+diff --git a/src/tests/runtime/icons.test.ts b/src/tests/runtime/icons.test.ts
+index 0cc8851..405127d 100644
+--- a/src/tests/runtime/icons.test.ts
++++ b/src/tests/runtime/icons.test.ts
+@@ -15,7 +15,7 @@ const withStyle = <T>(style: string, fn: () => T): T => {
+   }
+ };
+ 
+-const ALL_KEYS = ["File", "Folder", "Subcommand", "Option", "Argument", "Mixin", "Shortcut", "Special", "Default"] as const;
++const ALL_KEYS = ["File", "Folder", "Subcommand", "Option", "Argument", "Mixin", "Shortcut", "Special", "Branch", "Default"] as const;
+ 
+ afterEach(() => {
+   process.env.IS_ICONS = "unicode";
+diff --git a/src/tests/runtime/runtime.test.ts b/src/tests/runtime/runtime.test.ts
+index 32ef0b0..37457bb 100644
+--- a/src/tests/runtime/runtime.test.ts
++++ b/src/tests/runtime/runtime.test.ts
+@@ -2,6 +2,9 @@
+ // Licensed under the MIT License.
+ 
+ import fs from "node:fs";
++import childProcess from "node:child_process";
++import os from "node:os";
++import path from "node:path";
+ 
+ import { getSuggestions } from "../../runtime/runtime.js";
+ import { Shell } from "../../utils/shell.js";
+@@ -36,6 +39,16 @@ const testData = [
+ 
+ beforeAll(async () => await unpackResources());
+ 
++const makeGitRepo = (): string => {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "inshellisense-git-"));
++  childProcess.execFileSync("git", ["init", "-b", "main"], { cwd: dir, stdio: "ignore" });
++  childProcess.execFileSync("git", ["config", "user.email", "test@example.test"], { cwd: dir, stdio: "ignore" });
++  childProcess.execFileSync("git", ["config", "user.name", "Test User"], { cwd: dir, stdio: "ignore" });
++  childProcess.execFileSync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: dir, stdio: "ignore" });
++  childProcess.execFileSync("git", ["branch", "feature/payment-flow"], { cwd: dir, stdio: "ignore" });
++  return dir;
++};
++
+ describe(`parseCommand`, () => {
+   testData.forEach(({ command, name, skip, maxSuggestions }) => {
+     if (skip) return;
+@@ -114,4 +127,40 @@ describe(`getCommandSuggestions`, () => {
+       expect(icons).toEqual(expect.arrayContaining(expectedIcons ?? []));
+     });
+   });
++
++  test("suggests checking out a local branch from command position", async () => {
++    const cwd = makeGitRepo();
++    try {
++      const suggestions = await getSuggestions("main", cwd, Shell.Bash);
++      expect(suggestions?.suggestions).toEqual(
++        expect.arrayContaining([
++          expect.objectContaining({
++            name: "main",
++            type: "branch",
++            insertValue: "git checkout main ",
++          }),
++        ]),
++      );
++    } finally {
++      fs.rmSync(cwd, { recursive: true, force: true });
++    }
++  });
++
++  test("finds local branches by contained text", async () => {
++    const cwd = makeGitRepo();
++    try {
++      const suggestions = await getSuggestions("pay", cwd, Shell.Bash);
++      expect(suggestions?.suggestions).toEqual(
++        expect.arrayContaining([
++          expect.objectContaining({
++            name: "feature/payment-flow",
++            type: "branch",
++            insertValue: "git checkout feature/payment-flow ",
++          }),
++        ]),
++      );
++    } finally {
++      fs.rmSync(cwd, { recursive: true, force: true });
++    }
++  });
+ });
+diff --git a/src/utils/config.ts b/src/utils/config.ts
+index b4a67a4..ebb2693 100644
+--- a/src/utils/config.ts
++++ b/src/utils/config.ts
+@@ -113,6 +113,7 @@ type TypeColors = {
+ 	folder: string;
+ 	file: string;
+ 	subcommand: string;
++	branch: string;
+ 	option: string;
+ 	arg: string;
+ 	special: string;
+@@ -278,6 +279,7 @@ const configSchema = {
+ 						folder: { type: "string", nullable: true },
+ 						file: { type: "string", nullable: true },
+ 						subcommand: { type: "string", nullable: true },
++						branch: { type: "string", nullable: true },
+ 						option: { type: "string", nullable: true },
+ 						arg: { type: "string", nullable: true },
+ 						special: { type: "string", nullable: true },
+@@ -401,6 +403,7 @@ export const loadConfig = async (program: Command) => {
+ 						folder: config?.theme?.types?.folder ?? globalConfig.theme.types.folder,
+ 						file: config?.theme?.types?.file ?? globalConfig.theme.types.file,
+ 						subcommand: config?.theme?.types?.subcommand ?? globalConfig.theme.types.subcommand,
++						branch: config?.theme?.types?.branch ?? globalConfig.theme.types.branch,
+ 						option: config?.theme?.types?.option ?? globalConfig.theme.types.option,
+ 						arg: config?.theme?.types?.arg ?? globalConfig.theme.types.arg,
+ 						special: config?.theme?.types?.special ?? globalConfig.theme.types.special,
+-- 
+2.51.0
+
