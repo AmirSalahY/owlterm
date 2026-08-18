@@ -9,6 +9,8 @@ const URL = process.env.OWLTERM_UPDATE_URL ?? `https://api.github.com/repos/${RE
 const CACHE = path.join(os.homedir(), ".owlterm", "update-check.json");
 const TTL_MS = Number(process.env.OWLTERM_UPDATE_TTL_MS ?? 6 * 60 * 60 * 1000);
 const TIMEOUT_MS = Number(process.env.OWLTERM_UPDATE_TIMEOUT_MS ?? 1200);
+const cachedOnly = process.argv.includes("--cached-only");
+const refreshOnly = process.argv.includes("--refresh-only");
 
 const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 
@@ -43,10 +45,10 @@ const compareVersions = (left, right) => {
   return a.prerelease.localeCompare(b.prerelease);
 };
 
-const readCache = () => {
+const readCache = ({ allowStale = false } = {}) => {
   try {
     const cached = readJson(CACHE);
-    if (Date.now() - cached.checkedAt < TTL_MS) return cached.release;
+    if (allowStale || Date.now() - cached.checkedAt < TTL_MS) return cached.release;
   } catch {
     return undefined;
   }
@@ -121,8 +123,16 @@ const fetchRelease = async () => {
 const main = async () => {
   const current = currentVersion();
   if (!current) return;
-  const release = readCache() ?? (await fetchRelease());
+  let release;
+  if (cachedOnly) {
+    release = readCache({ allowStale: true });
+  } else if (refreshOnly) {
+    release = await fetchRelease();
+  } else {
+    release = readCache() ?? (await fetchRelease());
+  }
   if (!release?.version || compareVersions(release.version, current) <= 0) return;
+  if (refreshOnly) return;
 
   writeNotice(`\nowlterm ${release.version} is available; current is ${current}.\nRun: owlterm update\n\n`);
 };
