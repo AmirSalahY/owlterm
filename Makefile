@@ -23,9 +23,9 @@ specs:
 	npm run build:specs
 
 ## Vendor test suite
-## NOTE: 3 tests fail on clean upstream too (one shells out to a real `brew
-## search`, two depend on terminal cursor sequences). Compare before believing a
-## regression. `npm run test:e2e` needs a `shell-use` daemon that isn't on npm.
+## NOTE: expected to be fully green. Two cases still reach the network (a brew
+## generator and a NuGet one), so a failure there may be your connection rather
+## than a regression. `npm run test:e2e` needs a `shell-use` daemon that isn't on npm.
 test:
 	npm run test:vendor
 

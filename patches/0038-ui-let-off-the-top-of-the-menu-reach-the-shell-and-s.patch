@@ -1,7 +1,7 @@
 From 080c767d713e8c501f242c868a7fc32bc4575a7d Mon Sep 17 00:00:00 2001
 From: AmirSalahY <amir@noury.ch>
 Date: Sun, 30 Aug 2026 10:40:06 +0300
-Subject: [PATCH 38/38] =?UTF-8?q?ui:=20let=20=E2=86=91=20off=20the=20top?=
+Subject: [PATCH 38/39] =?UTF-8?q?ui:=20let=20=E2=86=91=20off=20the=20top?=
  =?UTF-8?q?=20of=20the=20menu=20reach=20the=20shell,=20and=20stop=20stalli?=
  =?UTF-8?q?ng=20on=20Esc?=
 MIME-Version: 1.0
