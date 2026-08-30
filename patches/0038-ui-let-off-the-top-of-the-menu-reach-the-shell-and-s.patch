@@ -1,0 +1,69 @@
+From 080c767d713e8c501f242c868a7fc32bc4575a7d Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Sun, 30 Aug 2026 10:40:06 +0300
+Subject: [PATCH 38/38] =?UTF-8?q?ui:=20let=20=E2=86=91=20off=20the=20top?=
+ =?UTF-8?q?=20of=20the=20menu=20reach=20the=20shell,=20and=20stop=20stalli?=
+ =?UTF-8?q?ng=20on=20Esc?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Holding ↑ at the first suggestion did nothing at all: the key was clamped to
+index 0 and still reported as handled, so it never reached the shell and the
+line stayed put. From the top row there is nothing above to select, so the key
+belongs to history navigation — hand it back and hide the menu, which lets the
+existing up/down rule keep it hidden while walking history and bring it back on
+the next edit.
+
+Esc looked laggy for a different reason: readline only decides a lone Esc is a
+key once it gives up waiting for the rest of an escape sequence, and Node's
+default for that is 500ms. That timeout is precisely the delay before the menu
+disappears, so shorten it to the 50ms vim has long used for the same trade-off.
+---
+ src/ui/stdioProxy.ts        |  7 ++++++-
+ src/ui/suggestionManager.ts | 11 ++++++++++-
+ 2 files changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/src/ui/stdioProxy.ts b/src/ui/stdioProxy.ts
+index 61fbaf3..b08ca6d 100644
+--- a/src/ui/stdioProxy.ts
++++ b/src/ui/stdioProxy.ts
+@@ -39,7 +39,12 @@ export class StdioProxy {
+   constructor({ onCursorPositionReport = () => {}, onWin32InputMode = () => {} }: StdioProxyOptions = {}) {
+     this.#onCursorPositionReport = onCursorPositionReport;
+     this.#onWin32InputMode = onWin32InputMode;
+-    readline.emitKeypressEvents(this.#keypressInput as unknown as NodeJS.ReadStream);
++    // A bare Esc is only recognised once readline gives up waiting for the rest
++    // of an escape sequence, so this timeout is exactly how long dismissing the
++    // menu appears to hang. Node's 500ms default is a visible stall; 50ms is the
++    // ttimeoutlen vim has used for decades and still comfortably outlasts the
++    // gap between bytes of a real sequence arriving in one read.
++    readline.emitKeypressEvents(this.#keypressInput as unknown as NodeJS.ReadStream, { escapeCodeTimeout: 50 } as unknown as readline.Interface);
+   }
+ 
+   onKeypress(listener: (...event: KeyPressEvent) => void): void {
+diff --git a/src/ui/suggestionManager.ts b/src/ui/suggestionManager.ts
+index 01e033f..6c5a9d7 100644
+--- a/src/ui/suggestionManager.ts
++++ b/src/ui/suggestionManager.ts
+@@ -548,7 +548,16 @@ export class SuggestionManager {
+       this.#hideSuggestions = true;
+       this.#dismissed = true;
+     } else if (matches(keyPress, b.previousSuggestion)) {
+-      this.#activeSuggestionIdx = Math.max(0, this.#activeSuggestionIdx - 1);
++      // Past the top row the key stops being ours: hand it to the shell so it
++      // walks history, rather than dead-ending on the first suggestion. The menu
++      // is hidden — not dismissed — so it comes back as soon as the line is
++      // edited again instead of staying gone for the rest of the line.
++      if (this.#activeSuggestionIdx === 0) {
++        this.#suggestBlob = undefined;
++        this.#hideSuggestions = true;
++        return false;
++      }
++      this.#activeSuggestionIdx -= 1;
+     } else if (matches(keyPress, b.nextSuggestion)) {
+       this.#activeSuggestionIdx = Math.min(this.#activeSuggestionIdx + 1, (this.#suggestBlob?.suggestions.length ?? 1) - 1);
+     } else if (matches(keyPress, b.toggleDescription)) {
+-- 
+2.51.0
+
