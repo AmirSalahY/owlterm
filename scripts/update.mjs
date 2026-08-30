@@ -6,7 +6,9 @@ import path from "node:path";
 const ROOT = process.argv[2] ?? process.cwd();
 const REPO = process.env.OWLTERM_UPDATE_REPO ?? "AmirSalahY/owlterm";
 const API_URL = process.env.OWLTERM_UPDATE_URL ?? `https://api.github.com/repos/${REPO}/releases/latest`;
-const TIMEOUT_MS = Number(process.env.OWLTERM_UPDATE_TIMEOUT_MS ?? 5000);
+// Longer than the startup check's budget: that one must never hold up a shell,
+// whereas this is an explicit command the user is sitting and waiting on.
+const TIMEOUT_MS = Number(process.env.OWLTERM_UPDATE_TIMEOUT_MS ?? 10_000);
 
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, { cwd: ROOT, stdio: "inherit", ...options });
@@ -38,6 +40,15 @@ const fetchLatestTag = async () => {
     const json = await response.json();
     if (!json?.tag_name) throw new Error("latest release has no tag_name");
     return json.tag_name;
+  } catch (error) {
+    // Being unable to reach GitHub is the ordinary case here — a captive portal,
+    // a VPN, a link slower than TIMEOUT_MS — and an unhandled rejection turns it
+    // into a stack trace that reads like the tool is broken. Say what happened
+    // and point at the escape hatch instead.
+    const reason = error?.name === "AbortError" ? `no response within ${TIMEOUT_MS}ms` : (error?.message ?? error);
+    console.error(`owlterm update: could not reach GitHub to find the latest release (${reason}).`);
+    console.error("Check your connection and try again, or name a version yourself: OWLTERM_REF=v1.0.5 owlterm update");
+    process.exit(1);
   } finally {
     clearTimeout(timer);
   }
