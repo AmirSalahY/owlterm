@@ -1,0 +1,864 @@
+From f018f7aff8f5e78a3310ee632011989def5d1ca5 Mon Sep 17 00:00:00 2001
+From: AmirSalahY <amir@noury.ch>
+Date: Sun, 27 Sep 2026 12:12:52 +0300
+Subject: [PATCH 41/41] feat(ui): own the command-line palette, and colour
+ known subcommands
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Command-line highlighting previously used its own small colour scheme,
+distinct from zsh-syntax-highlighting even though the shell integration
+disables that plugin inside an owlterm session (the two would otherwise
+repaint the same cells). So the line looked different in owlterm than in a
+plain shell, and it mislabelled shell keywords: typing `if` or `for` at the
+start of a line showed it in red as an invalid command, because the old
+classifier only distinguished commands from arguments.
+
+Rewrite the classifier as a small parser that walks the line the way the
+plugin's main highlighter does, and colour it with the plugin's own default
+styles (read from the installed copy) rather than inventing new ones: quotes,
+$-expansions, command and process substitution, redirections, globs, history
+expansion, precommands like sudo, and reserved words all get the plugin's
+colour and nothing is misclassified as an invalid command anymore. Colours are
+sent as terminal palette codes, not fixed hex, so the line follows the user's
+theme exactly as it would outside owlterm.
+
+The plugin has no notion of a subcommand — `git status` only colours `git`.
+owlterm's completion specs already know a command's real subcommands, so add
+one more style on top: a positional word is coloured only if the active spec
+(or nested subcommand spec, chained through the line) actually lists it,
+otherwise it's left in the terminal's normal colour so a typo stays visible.
+Bright green, since it's still a command word, one step lighter than the
+green used for the command itself. Spec lookups run through a small
+non-blocking cache — the highlighter repaints synchronously on every
+keystroke and can't wait on an import; the first keystrokes on a new command
+are uncoloured until its spec finishes loading in the background.
+
+Branch names in git commands are no longer coloured on the command line —
+the plugin doesn't colour them either, and the one-off lookup that did it
+here was the last user of gitRefs.ts's isGitRef, now removed. Branch
+suggestions in the dropdown are unaffected.
+---
+ src/isterm/pty.ts                             |  21 +-
+ src/runtime/commandLineColor.ts               | 399 ++++++++++++++++--
+ src/runtime/gitRefs.ts                        |   2 -
+ src/runtime/runtime.ts                        |  17 +
+ src/tests/runtime/commandLineColor.test.ts    | 163 ++++---
+ .../runtime/commandLineColorAlias.test.ts     |  18 +-
+ 6 files changed, 493 insertions(+), 127 deletions(-)
+
+diff --git a/src/isterm/pty.ts b/src/isterm/pty.ts
+index 521c2f5..3af5652 100644
+--- a/src/isterm/pty.ts
++++ b/src/isterm/pty.ts
+@@ -30,9 +30,8 @@ import { shellResourcesPath } from "../utils/constants.js";
+ import { recordCommand } from "../utils/frecency.js";
+ import { changesShellDefinitions, reloadAliases } from "../runtime/alias.js";
+ import { endTiming, startTiming } from "../utils/performance.js";
+-import { getConfig } from "../utils/config.js";
+ import { wcswidth } from "../utils/unicode.js";
+-import { commandLineColorSpans, commandLineColorTypeAt, type CommandLineColorType } from "../runtime/commandLineColor.js";
++import { commandLineColorSpans, commandLineStyleAt, highlightSgr } from "../runtime/commandLineColor.js";
+ 
+ const ISTermOnDataEvent = "data";
+ const ISTermOnBufferChangeEvent = "bufferChange";
+@@ -363,22 +362,6 @@ export class ISTerm implements IPty {
+     return bufferType === "normal" ? this.#term.buffer.normal : this.#term.buffer.active;
+   }
+ 
+-  private _commandLineColor(type: CommandLineColorType | undefined): string | undefined {
+-    if (type == null) return undefined;
+-    if (type === "invalidCommand") return "#FF453A";
+-    const { colorByType, foreground, types } = getConfig().theme;
+-    if (!colorByType) return undefined;
+-    return types[type as keyof typeof types] || foreground;
+-  }
+-
+-  private _fgAnsi(hex: string | undefined): string {
+-    if (hex == null) return ansi.resetColor;
+-    const normalized = hex.trim().replace(/^#/, "");
+-    if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return ansi.resetColor;
+-    const [r, g, b] = [0, 2, 4].map((idx) => parseInt(normalized.slice(idx, idx + 2), 16));
+-    return `\x1b[38;2;${r};${g};${b}m`;
+-  }
+-
+   getCommandLinePatch(bufferType: BufferType = "active"): string {
+     const commandText = this.#commandManager.getState().commandText;
+     const location = this.#commandManager.getCommandLocation();
+@@ -406,7 +389,7 @@ export class ISTerm implements IPty {
+           const width = cell?.getWidth() ?? 1;
+           if (width === 0) continue;
+ 
+-          const color = this._fgAnsi(this._commandLineColor(commandLineColorTypeAt(spans, consumed)));
++          const color = highlightSgr(commandLineStyleAt(spans, consumed));
+           if (color !== currentColor) {
+             rendered += color;
+             currentColor = color;
+diff --git a/src/runtime/commandLineColor.ts b/src/runtime/commandLineColor.ts
+index 50eff63..884c26d 100644
+--- a/src/runtime/commandLineColor.ts
++++ b/src/runtime/commandLineColor.ts
+@@ -2,26 +2,88 @@
+ // Licensed under the MIT License.
+ 
+ import { isShellDefinedCommand } from "./alias.js";
++import { cachedCommandSpec } from "./runtime.js";
+ import { wcswidth } from "../utils/unicode.js";
+ import fs from "node:fs";
++import os from "node:os";
+ import path from "node:path";
+-import { isGitRef } from "./gitRefs.js";
+-import type { SuggestionType } from "./model.js";
+ 
+-export type CommandLineColorType = SuggestionType | "invalidCommand";
++// The command line is classified and coloured the way zsh-syntax-highlighting's
++// main highlighter does it, so a line looks the same inside owlterm as outside.
++// The shell integration switches the plugin itself off (ZSH_HIGHLIGHT_MAXLENGTH=0)
++// because owlterm repaints these cells and the two would fight over them.
++export type HighlightStyle =
++  | "unknown-token"
++  | "reserved-word"
++  | "precommand"
++  | "arg0"
++  | "subcommand"
++  | "path"
++  | "globbing"
++  | "history-expansion"
++  | "single-quoted-argument"
++  | "double-quoted-argument"
++  | "dollar-quoted-argument"
++  | "dollar-double-quoted-argument"
++  | "command-substitution-delimiter"
++  | "back-quoted-argument-delimiter"
++  | "redirection";
++
++// zsh-syntax-highlighting's defaults, from highlighters/main/main-highlighter.zsh.
++// Styles it leaves at `none` (options, plain arguments, assignments, separators)
++// have no entry and render in the terminal's own foreground.
++export const highlightStyles: Record<HighlightStyle, string> = {
++  "unknown-token": "fg=red,bold",
++  "reserved-word": "fg=yellow",
++  precommand: "fg=green,underline",
++  arg0: "fg=green",
++  // The plugin has no subcommand style. Bright green reads as part of the
++  // command without being mistaken for one.
++  subcommand: "fg=10",
++  path: "underline",
++  globbing: "fg=blue",
++  "history-expansion": "fg=blue",
++  "single-quoted-argument": "fg=yellow",
++  "double-quoted-argument": "fg=yellow",
++  "dollar-quoted-argument": "fg=yellow",
++  "dollar-double-quoted-argument": "fg=cyan",
++  "command-substitution-delimiter": "fg=magenta",
++  "back-quoted-argument-delimiter": "fg=magenta",
++  redirection: "fg=yellow",
++};
++
++const sgrColors: Record<string, number> = { black: 0, red: 1, green: 2, yellow: 3, blue: 4, magenta: 5, cyan: 6, white: 7 };
++const sgrAttributes: Record<string, number> = { bold: 1, underline: 4 };
++
++// zsh's fg=N: 0-7 and 8-15 are the terminal's normal and bright colours.
++const paletteIndexSgr = (index: number): number[] => (index < 8 ? [30 + index] : index < 16 ? [90 + index - 8] : [38, 5, index]);
++
++// Palette colours rather than truecolor: that is what the plugin emits, so the
++// line follows the terminal's theme exactly as it does in a plain zsh.
++export const highlightSgr = (style: HighlightStyle | undefined): string => {
++  const codes = [0];
++  for (const part of style ? highlightStyles[style].split(",") : []) {
++    const [key, value] = part.split("=");
++    if (key === "fg" && sgrColors[value] != null) codes.push(30 + sgrColors[value]);
++    else if (key === "fg" && /^\d+$/.test(value)) codes.push(...paletteIndexSgr(Number(value)));
++    else if (sgrAttributes[key] != null) codes.push(sgrAttributes[key]);
++  }
++  return `\x1b[${codes.join(";")}m`;
++};
+ 
+ export type CommandLineColorSpan = {
+   start: number;
+   end: number;
+-  type: CommandLineColorType;
++  style: HighlightStyle;
+ };
+ 
+-const operator = /^(;|\||\|\||&&)$/;
+ const commandExistsCache = new Map<string, boolean>();
+ const shellBuiltins = new Set([
+   ".",
+   ":",
++  "[",
+   "alias",
++  "autoload",
+   "bg",
+   "bindkey",
+   "break",
+@@ -29,9 +91,11 @@ const shellBuiltins = new Set([
+   "cd",
+   "command",
+   "continue",
++  "declare",
+   "dirs",
+   "disown",
+   "echo",
++  "emulate",
+   "eval",
+   "exec",
+   "exit",
+@@ -45,6 +109,7 @@ const shellBuiltins = new Set([
+   "kill",
+   "let",
+   "local",
++  "noglob",
+   "popd",
+   "print",
+   "printf",
+@@ -54,6 +119,7 @@ const shellBuiltins = new Set([
+   "readonly",
+   "return",
+   "set",
++  "setopt",
+   "shift",
+   "source",
+   "test",
+@@ -65,9 +131,77 @@ const shellBuiltins = new Set([
+   "ulimit",
+   "unalias",
+   "unset",
++  "unsetopt",
+   "wait",
++  "whence",
++  "which",
++]);
++
++const reservedWords = new Set([
++  "!",
++  "[[",
++  "]]",
++  "{",
++  "}",
++  "case",
++  "coproc",
++  "do",
++  "done",
++  "elif",
++  "else",
++  "end",
++  "esac",
++  "fi",
++  "for",
++  "foreach",
++  "function",
++  "if",
++  "in",
++  "nocorrect",
++  "repeat",
++  "select",
++  "then",
++  "time",
++  "until",
++  "while",
++]);
++
++// Precommand name -> the short options that take an argument, copied from the
++// plugin's precommand_options (the part before the first colon).
++const precommands = new Map<string, string>([
++  ["builtin", ""],
++  ["command", ""],
++  ["exec", "a"],
++  ["noglob", ""],
++  ["doas", "aCu"],
++  ["nice", "n"],
++  ["pkexec", ""],
++  ["sudo", "Cgprtu"],
++  ["stdbuf", "ioe"],
++  ["eatmydata", ""],
++  ["catchsegv", ""],
++  ["nohup", ""],
++  ["setsid", ""],
++  ["env", "u"],
++  ["ionice", "cn"],
++  ["strace", "IbeaosXPpEuOS"],
++  ["proxychains", "f"],
++  ["torsocks", "idq"],
++  ["torify", "idq"],
++  ["ssh-agent", "aEPt"],
++  ["tabbed", "gnprtTuU"],
++  ["chronic", ""],
++  ["ifne", ""],
++  ["grc", ""],
++  ["cpulimit", "elp"],
++  ["ktrace", "fgpt"],
+ ]);
+ 
++const separators = ["&&", "||", ";;", "|&", "&|", "&!", ";", "|", "&", "\n", "(", ")"];
++const redirection = /^\d*(?:[<>]&(?:\d+|-)?|&>>|&>|>>[|!]?|>[|!]?|<<<|<<-?|<>|<)/;
++const assignment = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/;
++const wordBreak = /[\s;|&<>()]/;
++
+ const executable = (candidate: string): boolean => {
+   try {
+     fs.accessSync(candidate, fs.constants.X_OK);
+@@ -78,7 +212,7 @@ const executable = (candidate: string): boolean => {
+ };
+ 
+ const pathCommandExists = (command: string, cwd: string): boolean => {
+-  if (command.includes("/")) return executable(path.resolve(cwd, command));
++  if (command.includes("/")) return executable(path.resolve(cwd, expandHome(command)));
+   return (process.env.PATH ?? "")
+     .split(path.delimiter)
+     .filter(Boolean)
+@@ -98,53 +232,238 @@ const commandExists = (command: string, cwd: string): boolean => {
+   return exists;
+ };
+ 
+-const gitRefSubcommands = new Set(["branch", "checkout", "diff", "merge", "rebase", "restore", "show", "switch"]);
++const expandHome = (word: string): string => (word === "~" || word.startsWith("~/") ? os.homedir() + word.slice(1) : word);
+ 
+-const isGitRefPosition = (tokens: string[], token: string, cwd: string): boolean => {
+-  if (tokens[0] !== "git" || !gitRefSubcommands.has(tokens[1] ?? "")) return false;
+-  if (token.startsWith("-")) return false;
+-  return isGitRef(cwd, token);
++const pathExists = (word: string, cwd: string): boolean => {
++  if (word === "") return false;
++  try {
++    fs.accessSync(path.resolve(cwd, expandHome(word)));
++    return true;
++  } catch {
++    return false;
++  }
+ };
+ 
+-export const commandLineColorSpans = (commandText: string, cwd = process.cwd()): CommandLineColorSpan[] => {
++const findSubcommand = (spec: Fig.Subcommand | undefined, word: string): Fig.Subcommand | undefined =>
++  spec?.subcommands?.find((subcommand) => (Array.isArray(subcommand.name) ? subcommand.name : [subcommand.name]).includes(word));
++
++// Index just past the `)` that closes the `(` at `open`, or the end of the text.
++const closingParen = (text: string, open: number, to: number): number => {
++  let depth = 0;
++  for (let i = open; i < to; i++) {
++    const ch = text[i];
++    if (ch === "\\") i++;
++    else if (ch === "(") depth++;
++    else if (ch === ")" && --depth === 0) return i + 1;
++  }
++  return to;
++};
++
++type Word = {
++  // The word with quotes and escapes removed, for command and path lookups.
++  value: string;
++  // Holds a $-expansion or command substitution, so its runtime value is unknown.
++  expands: boolean;
++  // Holds an unquoted * or ?.
++  globs: boolean;
++  spans: CommandLineColorSpan[];
++};
++
++// Reads one shell word starting at `from`, collecting the quote, expansion and
++// glob regions inside it. Returns the index just past the word.
++const readWord = (text: string, from: number, to: number, cwd: string): [Word, number] => {
++  const word: Word = { value: "", expands: false, globs: false, spans: [] };
++  let i = from;
++  while (i < to && !wordBreak.test(text[i])) {
++    const ch = text[i];
++    if (ch === "\\") {
++      word.value += text[i + 1] ?? "";
++      i += 2;
++    } else if (ch === "'" || (ch === "$" && text[i + 1] === "'")) {
++      const open = ch === "$" ? i + 1 : i;
++      let close = open + 1;
++      while (close < to && text[close] !== "'") close += ch === "$" && text[close] === "\\" ? 2 : 1;
++      const end = Math.min(close + 1, to);
++      word.spans.push({ start: i, end, style: ch === "$" ? "dollar-quoted-argument" : "single-quoted-argument" });
++      word.value += text.slice(open + 1, close);
++      i = end;
++    } else if (ch === '"') {
++      const start = i;
++      const inner: CommandLineColorSpan[] = [];
++      i++;
++      while (i < to && text[i] !== '"') {
++        if (text[i] === "\\") {
++          word.value += text[i + 1] ?? "";
++          i += 2;
++        } else if (text[i] === "$" && text[i + 1] === "(") {
++          const end = closingParen(text, i + 1, to);
++          inner.push(...substitution(text, i, end, to, cwd));
++          word.expands = true;
++          i = end;
++        } else if (text[i] === "$" && /[A-Za-z_{0-9#?$!*@-]/.test(text[i + 1] ?? "")) {
++          const match = text[i + 1] === "{" ? /^\$\{[^}]*\}?/.exec(text.slice(i, to)) : /^\$(?:[A-Za-z_][A-Za-z0-9_]*|.)/.exec(text.slice(i, to));
++          const end = i + (match?.[0].length ?? 1);
++          inner.push({ start: i, end, style: "dollar-double-quoted-argument" });
++          word.expands = true;
++          i = end;
++        } else {
++          word.value += text[i];
++          i++;
++        }
++      }
++      i = Math.min(i + 1, to);
++      word.spans.push({ start, end: i, style: "double-quoted-argument" }, ...inner);
++    } else if (ch === "$" && text[i + 1] === "(") {
++      const end = closingParen(text, i + 1, to);
++      if (text[i + 2] !== "(") word.spans.push(...substitution(text, i, end, to, cwd));
++      word.expands = true;
++      i = end;
++    } else if (ch === "`") {
++      let close = i + 1;
++      while (close < to && text[close] !== "`") close += text[close] === "\\" ? 2 : 1;
++      word.spans.push({ start: i, end: i + 1, style: "back-quoted-argument-delimiter" });
++      word.spans.push(...highlight(text, i + 1, Math.min(close, to), cwd));
++      if (close < to) word.spans.push({ start: close, end: close + 1, style: "back-quoted-argument-delimiter" });
++      word.expands = true;
++      i = Math.min(close + 1, to);
++    } else if (ch === "$") {
++      word.expands = true;
++      word.value += ch;
++      i++;
++    } else if (ch === "*" || ch === "?") {
++      word.spans.push({ start: i, end: i + 1, style: "globbing" });
++      word.globs = true;
++      word.value += ch;
++      i++;
++    } else {
++      word.value += ch;
++      i++;
++    }
++  }
++  return [word, i];
++};
++
++// `$(...)`: magenta delimiters, and the inside highlighted as a command line of
++// its own, which is what the plugin does too.
++const substitution = (text: string, dollar: number, end: number, to: number, cwd: string): CommandLineColorSpan[] => {
++  const closed = end <= to && text[end - 1] === ")" && end - dollar > 2;
++  const spans: CommandLineColorSpan[] = [{ start: dollar, end: dollar + 2, style: "command-substitution-delimiter" }];
++  spans.push(...highlight(text, dollar + 2, closed ? end - 1 : end, cwd));
++  if (closed) spans.push({ start: end - 1, end, style: "command-substitution-delimiter" });
++  return spans;
++};
++
++type Mode =
++  | { kind: "command" }
++  // A command's arguments; `spec` is the command or subcommand the next
++  // positional word may be a subcommand of.
++  | { kind: "args"; spec?: Fig.Subcommand }
++  // After for/select/foreach/case: one plain name, then a list where `in` is a keyword.
++  | { kind: "name"; then: "list" | "command" }
++  | { kind: "list" }
++  // Inside [[ ... ]].
++  | { kind: "condition" }
++  // After a precommand: its options, then the real command.
++  | { kind: "precommand"; argFlags: string; optionArg: boolean };
++
++const highlight = (text: string, from: number, to: number, cwd: string): CommandLineColorSpan[] => {
+   const spans: CommandLineColorSpan[] = [];
+-  let expectingCommand = true;
+-  let commandTokens: string[] = [];
+-
+-  for (const match of commandText.matchAll(/\S+/g)) {
+-    const raw = match[0];
+-    const start = wcswidth(commandText.slice(0, match.index));
+-    const end = start + wcswidth(raw);
+-
+-    if (operator.test(raw)) {
+-      spans.push({ start, end, type: "special" });
+-      expectingCommand = true;
+-      commandTokens = [];
++  let mode: Mode = { kind: "command" };
++  let redirectTarget = false;
++  let i = from;
++
++  while (i < to) {
++    if (/\s/.test(text[i]) && text[i] !== "\n") {
++      i++;
++      continue;
++    }
++
++    const rest = text.slice(i, to);
++    const redirect = redirection.exec(rest);
++    if (redirect) {
++      spans.push({ start: i, end: i + redirect[0].length, style: "redirection" });
++      redirectTarget = true;
++      i += redirect[0].length;
+       continue;
+     }
+ 
+-    if (raw.includes("=") && expectingCommand && !raw.startsWith("-")) {
+-      spans.push({ start, end, type: "special" });
++    const separator = separators.find((candidate) => rest.startsWith(candidate));
++    if (separator) {
++      mode = separator === ")" ? { kind: "args" } : { kind: "command" };
++      i += separator.length;
+       continue;
+     }
+ 
+-    const type: CommandLineColorType = expectingCommand
+-      ? commandExists(raw, cwd)
+-        ? "subcommand"
+-        : "invalidCommand"
+-      : raw.startsWith("-")
+-      ? "option"
+-      : isGitRefPosition([...commandTokens, raw], raw, cwd)
+-      ? "branch"
+-      : "arg";
+-    spans.push({ start, end, type });
+-    commandTokens.push(raw);
+-    expectingCommand = false;
++    const [word, end] = readWord(text, i, to, cwd);
++    const raw = text.slice(i, end);
++    const base = (style: HighlightStyle | undefined) => {
++      if (style) spans.push({ start: i, end, style });
++      spans.push(...word.spans);
++    };
++
++    if (redirectTarget) {
++      base(!word.expands && !word.globs && pathExists(word.value, cwd) ? "path" : undefined);
++      redirectTarget = false;
++    } else if (raw.length > 1 && raw.startsWith("!") && !raw.startsWith("!=")) {
++      base("history-expansion");
++      if (mode.kind === "command") mode = { kind: "args" };
++    } else if (mode.kind === "precommand" && (mode.optionArg || raw.startsWith("-"))) {
++      base(undefined);
++      const flag = /^-([A-Za-z])$/.exec(raw)?.[1];
++      const { argFlags, optionArg }: { argFlags: string; optionArg: boolean } = mode;
++      mode = { kind: "precommand", argFlags, optionArg: !optionArg && flag != null && argFlags.includes(flag) };
++    } else if (mode.kind === "command" || mode.kind === "precommand") {
++      if (raw === "[[") {
++        base("reserved-word");
++        mode = { kind: "condition" };
++      } else if (reservedWords.has(raw)) {
++        base("reserved-word");
++        if (["for", "foreach", "select", "case"].includes(raw)) mode = { kind: "name", then: "list" };
++        else if (raw === "function") mode = { kind: "name", then: "command" };
++      } else if (assignment.test(raw)) {
++        base(undefined);
++      } else if (word.expands) {
++        base(undefined);
++        mode = { kind: "args" };
++      } else if (precommands.has(word.value) && commandExists(word.value, cwd)) {
++        base("precommand");
++        mode = { kind: "precommand", argFlags: precommands.get(word.value) ?? "", optionArg: false };
++      } else {
++        const exists = commandExists(word.value, cwd);
++        base(exists ? "arg0" : "unknown-token");
++        mode = { kind: "args", spec: exists ? cachedCommandSpec(word.value) : undefined };
++      }
++    } else if (mode.kind === "name") {
++      base(undefined);
++      mode = mode.then === "list" ? { kind: "list" } : { kind: "command" };
++    } else if (mode.kind === "list" && raw === "in") {
++      base("reserved-word");
++    } else if (mode.kind === "condition" && raw === "]]") {
++      base("reserved-word");
++      mode = { kind: "args" };
++    } else if (raw.startsWith("-")) {
++      base(undefined);
++    } else {
++      const subcommand: Fig.Subcommand | undefined = mode.kind === "args" ? findSubcommand(mode.spec, word.value) : undefined;
++      if (subcommand) base("subcommand");
++      else base(!word.expands && !word.globs && pathExists(word.value, cwd) ? "path" : undefined);
++      // Subcommands only chain from the command: once a positional word isn't
++      // one, nothing after it is either.
++      if (mode.kind === "args") mode = { kind: "args", spec: subcommand };
++    }
++    i = Math.max(end, i + 1);
+   }
+ 
+   return spans;
+ };
+ 
+-export const commandLineColorTypeAt = (spans: CommandLineColorSpan[], offset: number): CommandLineColorType | undefined => {
+-  return spans.find((span) => offset >= span.start && offset < span.end)?.type;
++// Spans are in terminal columns. Later spans are more specific (a quote inside a
++// path, a glob inside a word) and win where they overlap, as in region_highlight.
++export const commandLineColorSpans = (commandText: string, cwd = process.cwd()): CommandLineColorSpan[] => {
++  const column = (index: number) => wcswidth(commandText.slice(0, index));
++  return highlight(commandText, 0, commandText.length, cwd).map((span) => ({ ...span, start: column(span.start), end: column(span.end) }));
++};
++
++export const commandLineStyleAt = (spans: CommandLineColorSpan[], offset: number): HighlightStyle | undefined => {
++  return spans.findLast((span) => offset >= span.start && offset < span.end)?.style;
+ };
+diff --git a/src/runtime/gitRefs.ts b/src/runtime/gitRefs.ts
+index 191799a..d57b04f 100644
+--- a/src/runtime/gitRefs.ts
++++ b/src/runtime/gitRefs.ts
+@@ -53,5 +53,3 @@ export const localGitBranches = (cwd: string): string[] => {
+   }
+   return [...branches].sort((a, b) => a.localeCompare(b));
+ };
+-
+-export const isGitRef = (cwd: string, token: string): boolean => localGitBranches(cwd).includes(token) || loadRefs(cwd, false).has(token);
+diff --git a/src/runtime/runtime.ts b/src/runtime/runtime.ts
+index a5dbe60..e38b69f 100644
+--- a/src/runtime/runtime.ts
++++ b/src/runtime/runtime.ts
+@@ -78,6 +78,23 @@ const loadSpec = async (cmd: CommandToken[], signal?: AbortSignal): Promise<Fig.
+   }
+ };
+ 
++export const warmCommandSpec = async (command: string): Promise<void> => {
++  if (typeof specSet[command] !== "string") return;
++  await loadSpec([{ token: command, tokenLength: command.length, complete: true, isOption: false }]).catch(() => undefined);
++};
++
++// The command-line highlighter repaints synchronously on every keystroke, so it
++// can't wait for an import. It takes the spec if it's cached and starts loading
++// it otherwise; the next repaint picks it up.
++export const cachedCommandSpec = (command: string): Fig.Subcommand | undefined => {
++  const spec = loadedSpecs[command];
++  if (spec == null) {
++    void warmCommandSpec(command);
++    return;
++  }
++  return getSubcommand(spec);
++};
++
+ // this load spec function should only be used for `loadSpec` on the fly as it is cacheless
+ const lazyLoadSpec = async (key: string, signal?: AbortSignal): Promise<Fig.Spec | undefined> => {
+   signal?.throwIfAborted();
+diff --git a/src/tests/runtime/commandLineColor.test.ts b/src/tests/runtime/commandLineColor.test.ts
+index e390282..479ff3d 100644
+--- a/src/tests/runtime/commandLineColor.test.ts
++++ b/src/tests/runtime/commandLineColor.test.ts
+@@ -1,85 +1,130 @@
+ // Copyright (c) Microsoft Corporation.
+ // Licensed under the MIT License.
+ 
+-import childProcess from "node:child_process";
+ import fs from "node:fs";
+ import os from "node:os";
+ import path from "node:path";
+ 
+-import { commandLineColorSpans, commandLineColorTypeAt } from "../../runtime/commandLineColor.js";
++import { commandLineColorSpans, commandLineStyleAt, highlightSgr } from "../../runtime/commandLineColor.js";
++import { warmCommandSpec } from "../../runtime/runtime.js";
+ 
+-const makeGitRepo = (): string => {
+-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "inshellisense-git-"));
+-  childProcess.execFileSync("git", ["init", "-b", "main"], { cwd: dir, stdio: "ignore" });
+-  childProcess.execFileSync("git", ["config", "user.email", "test@example.test"], { cwd: dir, stdio: "ignore" });
+-  childProcess.execFileSync("git", ["config", "user.name", "Test User"], { cwd: dir, stdio: "ignore" });
+-  childProcess.execFileSync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: dir, stdio: "ignore" });
+-  return dir;
+-};
+-
+-const makeGitRepoWithRemoteBranch = (): { root: string; cwd: string } => {
+-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "inshellisense-git-remote-"));
+-  const upstream = path.join(root, "upstream");
+-  const remote = path.join(root, "remote.git");
+-  const cwd = path.join(root, "client");
+-
+-  fs.mkdirSync(upstream);
+-  childProcess.execFileSync("git", ["init", "-b", "main"], { cwd: upstream, stdio: "ignore" });
+-  childProcess.execFileSync("git", ["config", "user.email", "test@example.test"], { cwd: upstream, stdio: "ignore" });
+-  childProcess.execFileSync("git", ["config", "user.name", "Test User"], { cwd: upstream, stdio: "ignore" });
+-  childProcess.execFileSync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: upstream, stdio: "ignore" });
+-  childProcess.execFileSync("git", ["checkout", "-b", "feature/fetched-only"], { cwd: upstream, stdio: "ignore" });
+-  childProcess.execFileSync("git", ["commit", "--allow-empty", "-m", "remote branch"], { cwd: upstream, stdio: "ignore" });
+-  childProcess.execFileSync("git", ["checkout", "main"], { cwd: upstream, stdio: "ignore" });
+-  childProcess.execFileSync("git", ["clone", "--bare", upstream, remote], { cwd: root, stdio: "ignore" });
+-  childProcess.execFileSync("git", ["clone", remote, cwd], { cwd: root, stdio: "ignore" });
+-
+-  return { root, cwd };
+-};
+-
+-const typeAtWord = (command: string, word: string, cwd?: string) => {
++const styleAt = (command: string, word: string, cwd?: string) => {
+   const offset = command.indexOf(word);
+-  return commandLineColorTypeAt(commandLineColorSpans(command, cwd), offset);
++  return commandLineStyleAt(commandLineColorSpans(command, cwd), offset);
+ };
+ 
+-test("classifies command words by shell role", () => {
++test("classifies command words the way zsh-syntax-highlighting does", () => {
+   const command = "FOO=bar rtk vercel alias set https://example.test --scope amirsalahys-projects";
+-  expect(typeAtWord(command, "FOO=bar")).toBe("special");
+-  expect(typeAtWord(command, "rtk")).toBe("subcommand");
+-  expect(typeAtWord(command, "vercel")).toBe("arg");
+-  expect(typeAtWord(command, "--scope")).toBe("option");
+-  expect(typeAtWord(command, "amirsalahys-projects")).toBe("arg");
++  expect(styleAt(command, "FOO=bar")).toBeUndefined();
++  expect(styleAt(command, "rtk")).toBe("arg0");
++  expect(styleAt(command, "vercel")).toBeUndefined();
++  expect(styleAt(command, "--scope")).toBeUndefined();
++  expect(styleAt(command, "amirsalahys-projects")).toBeUndefined();
+ });
+ 
+-test("marks unknown command-position words as invalid", () => {
++test("marks unknown command-position words as unknown tokens", () => {
+   const command = "definitely-not-a-real-command --force value";
+-  expect(typeAtWord(command, "definitely-not-a-real-command")).toBe("invalidCommand");
+-  expect(typeAtWord(command, "--force")).toBe("option");
+-  expect(typeAtWord(command, "value")).toBe("arg");
++  expect(styleAt(command, "definitely-not-a-real-command")).toBe("unknown-token");
++  expect(styleAt(command, "--force")).toBeUndefined();
++});
++
++test("starts a new command after separators", () => {
++  const command = "git status && npm test | cat; ls";
++  expect(styleAt(command, "git")).toBe("arg0");
++  expect(styleAt(command, "&&")).toBeUndefined();
++  expect(styleAt(command, "npm")).toBe("arg0");
++  expect(styleAt(command, "cat")).toBe("arg0");
++  expect(styleAt(command, "ls")).toBe("arg0");
++});
++
++test("highlights reserved words instead of flagging them", () => {
++  const command = "if [[ -n x ]]; then echo y; fi";
++  expect(styleAt(command, "if")).toBe("reserved-word");
++  expect(styleAt(command, "[[")).toBe("reserved-word");
++  expect(styleAt(command, "-n")).toBeUndefined();
++  expect(styleAt(command, "]]")).toBe("reserved-word");
++  expect(styleAt(command, "then")).toBe("reserved-word");
++  expect(styleAt(command, "echo")).toBe("arg0");
++  expect(styleAt(command, "fi")).toBe("reserved-word");
++});
++
++test("treats a for loop's list as arguments, not commands", () => {
++  const command = "for f in a b; do echo $f; done";
++  expect(styleAt(command, "for")).toBe("reserved-word");
++  expect(styleAt(command, "f in")).toBeUndefined();
++  expect(styleAt(command, "in")).toBe("reserved-word");
++  expect(styleAt(command, "a b")).toBeUndefined();
++  expect(styleAt(command, "do")).toBe("reserved-word");
++  expect(styleAt(command, "done")).toBe("reserved-word");
++});
++
++test("underlines precommands and skips their option arguments", () => {
++  const command = "sudo -u root ls";
++  expect(styleAt(command, "sudo")).toBe("precommand");
++  expect(styleAt(command, "root")).toBeUndefined();
++  expect(styleAt(command, "ls")).toBe("arg0");
+ });
+ 
+-test("starts a new command after shell operators", () => {
+-  const command = "git status && npm test";
+-  expect(typeAtWord(command, "git")).toBe("subcommand");
+-  expect(typeAtWord(command, "&&")).toBe("special");
+-  expect(typeAtWord(command, "npm")).toBe("subcommand");
++test("colours quotes, expansions and substitutions", async () => {
++  await warmCommandSpec("git");
++  const command = `echo 'one two' "hi $USER" $(git status) \`pwd\``;
++  expect(styleAt(command, "'one")).toBe("single-quoted-argument");
++  expect(styleAt(command, "two'")).toBe("single-quoted-argument");
++  expect(styleAt(command, '"hi')).toBe("double-quoted-argument");
++  expect(styleAt(command, "$USER")).toBe("dollar-double-quoted-argument");
++  expect(styleAt(command, "$(")).toBe("command-substitution-delimiter");
++  expect(styleAt(command, "git")).toBe("arg0");
++  expect(styleAt(command, "status")).toBe("subcommand");
++  expect(styleAt(command, ")")).toBe("command-substitution-delimiter");
++  expect(styleAt(command, "`")).toBe("back-quoted-argument-delimiter");
++  expect(styleAt(command, "pwd")).toBe("arg0");
+ });
+ 
+-test("classifies git ref arguments as branches", () => {
+-  const cwd = makeGitRepo();
++test("keeps an unclosed quote coloured to the end of the line", () => {
++  expect(styleAt(`echo "still typing`, "typing")).toBe("double-quoted-argument");
++});
++
++test("colours redirections, globs and history expansion", () => {
++  const command = "ls *.ts 2>&1 > out.txt; !!";
++  expect(styleAt(command, "*")).toBe("globbing");
++  expect(styleAt(command, ".ts")).toBeUndefined();
++  expect(styleAt(command, "2>&1")).toBe("redirection");
++  expect(styleAt(command, "> ")).toBe("redirection");
++  expect(styleAt(command, "!!")).toBe("history-expansion");
++});
++
++test("underlines arguments that are existing paths", () => {
++  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "inshellisense-path-"));
+   try {
+-    expect(typeAtWord("git checkout main", "main", cwd)).toBe("branch");
+-    expect(typeAtWord("git checkout missing", "missing", cwd)).toBe("arg");
++    fs.writeFileSync(path.join(cwd, "present.txt"), "");
++    expect(styleAt("cat present.txt absent.txt", "present.txt", cwd)).toBe("path");
++    expect(styleAt("cat present.txt absent.txt", "absent.txt", cwd)).toBeUndefined();
++    expect(styleAt("cat < present.txt", "present.txt", cwd)).toBe("path");
+   } finally {
+     fs.rmSync(cwd, { recursive: true, force: true });
+   }
+ });
+ 
+-test("classifies fetched remote-only branch names as branches", () => {
+-  const repo = makeGitRepoWithRemoteBranch();
+-  try {
+-    expect(typeAtWord("git checkout feature/fetched-only", "feature/fetched-only", repo.cwd)).toBe("branch");
+-  } finally {
+-    fs.rmSync(repo.root, { recursive: true, force: true });
+-  }
++test("colours subcommands the command's spec knows about", async () => {
++  await warmCommandSpec("git");
++  expect(styleAt("git status --short", "status")).toBe("subcommand");
++  expect(styleAt("git stauts", "stauts")).toBeUndefined();
++  expect(styleAt("git remote add origin url", "remote")).toBe("subcommand");
++  expect(styleAt("git remote add origin url", "add")).toBe("subcommand");
++  expect(styleAt("git remote add origin url", "origin")).toBeUndefined();
++  expect(styleAt("sudo git status", "status")).toBe("subcommand");
++});
++
++test("stops looking for subcommands after the first positional word that isn't one", async () => {
++  await warmCommandSpec("git");
++  expect(styleAt("git notathing status", "status")).toBeUndefined();
++});
++
++test("renders styles as palette SGR, like the plugin", () => {
++  expect(highlightSgr(undefined)).toBe("\x1b[0m");
++  expect(highlightSgr("arg0")).toBe("\x1b[0;32m");
++  expect(highlightSgr("unknown-token")).toBe("\x1b[0;31;1m");
++  expect(highlightSgr("precommand")).toBe("\x1b[0;32;4m");
++  expect(highlightSgr("path")).toBe("\x1b[0;4m");
++  expect(highlightSgr("subcommand")).toBe("\x1b[0;92m");
+ });
+diff --git a/src/tests/runtime/commandLineColorAlias.test.ts b/src/tests/runtime/commandLineColorAlias.test.ts
+index 7c6f564..46a88ff 100644
+--- a/src/tests/runtime/commandLineColorAlias.test.ts
++++ b/src/tests/runtime/commandLineColorAlias.test.ts
+@@ -9,11 +9,15 @@ jest.unstable_mockModule("../../runtime/alias.js", () => ({
+   isShellDefinedCommand: mockIsShellDefinedCommand,
+ }));
+ 
+-const { commandLineColorSpans, commandLineColorTypeAt } = await import("../../runtime/commandLineColor.js");
++jest.unstable_mockModule("../../runtime/runtime.js", () => ({
++  cachedCommandSpec: () => undefined,
++}));
++
++const { commandLineColorSpans, commandLineStyleAt } = await import("../../runtime/commandLineColor.js");
+ 
+ const typeAtWord = (command: string, word: string) => {
+   const offset = command.indexOf(word);
+-  return commandLineColorTypeAt(commandLineColorSpans(command), offset);
++  return commandLineStyleAt(commandLineColorSpans(command), offset);
+ };
+ 
+ beforeEach(() => {
+@@ -23,18 +27,18 @@ beforeEach(() => {
+ 
+ test("treats a known alias as a valid command", () => {
+   mockIsShellDefinedCommand.mockImplementation((command) => command === "gst");
+-  expect(typeAtWord("gst --short", "gst")).toBe("subcommand");
+-  expect(typeAtWord("gstt --short", "gstt")).toBe("invalidCommand");
++  expect(typeAtWord("gst --short", "gst")).toBe("arg0");
++  expect(typeAtWord("gstt --short", "gstt")).toBe("unknown-token");
+ });
+ 
+ test("treats a shell function as a valid command", () => {
+   // nvm is a function sourced from an rc file, so it is on no $PATH.
+   mockIsShellDefinedCommand.mockImplementation((command) => command === "nvm");
+-  expect(typeAtWord("nvm use 20", "nvm")).toBe("subcommand");
++  expect(typeAtWord("nvm use 20", "nvm")).toBe("arg0");
+ });
+ 
+ test("checks shell definitions ahead of the miss cache", () => {
+-  expect(typeAtWord("later-alias run", "later-alias")).toBe("invalidCommand");
++  expect(typeAtWord("later-alias run", "later-alias")).toBe("unknown-token");
+   mockIsShellDefinedCommand.mockImplementation((command) => command === "later-alias");
+-  expect(typeAtWord("later-alias run", "later-alias")).toBe("subcommand");
++  expect(typeAtWord("later-alias run", "later-alias")).toBe("arg0");
+ });
+-- 
+2.51.0
+
