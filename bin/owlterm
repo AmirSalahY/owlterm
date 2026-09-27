@@ -72,6 +72,16 @@ refresh_resources_if_needed() {
   fi
 }
 
+# The banner fronts every subcommand someone runs by hand. Only onto a terminal:
+# `owlterm alias init zsh > file` and `$(owlterm init zsh)` emit shell code, and
+# `complete` emits JSON, which a banner would corrupt. Starting a session
+# (`owlterm -s zsh`) is not a subcommand, and it clears the screen regardless.
+case "${1:-}" in
+  update | init | reinit | doctor | specs | complete | alias | uninstall | help | -h | --help | -v | --version)
+    [[ -t 1 ]] && node "$ROOT/scripts/banner.mjs"
+    ;;
+esac
+
 case "${1:-}" in
   update)
     exec node "$UPDATE" "$ROOT"

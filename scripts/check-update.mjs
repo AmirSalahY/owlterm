@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { BANNER } from "./banner.mjs";
 
 const ROOT = process.argv[2] ?? process.cwd();
 const REPO = process.env.OWLTERM_UPDATE_REPO ?? "AmirSalahY/owlterm";
@@ -134,7 +135,7 @@ const main = async () => {
   if (!release?.version || compareVersions(release.version, current) <= 0) return;
   if (refreshOnly) return;
 
-  writeNotice(`\nowlterm ${release.version} is available; current is ${current}.\nRun: owlterm update\n\n`);
+  writeNotice(`\n${BANNER}\n\nowlterm ${release.version} is available; current is ${current}.\nRun: owlterm update\n\n`);
 };
 
 await main();
